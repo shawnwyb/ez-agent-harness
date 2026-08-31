@@ -1,12 +1,15 @@
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { chat, type Message } from "./llm.ts";
-import { runTool, TOOLS } from "./tools.ts";
+import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 
 const MAX_STEPS = 8;
 
 const messages: Message[] = [
-  { role: "system", content: "You are a helpful coding agent. Be concise." },
+  {
+    role: "system",
+    content: `You are a helpful coding agent. Be concise. Workspace: ${WORKSPACE}`,
+  },
 ];
 
 const rl = createInterface({ input: stdin, output: stdout });
@@ -40,7 +43,7 @@ while (true) {
       if (!calls?.length) break;
 
       for (const call of calls) {
-        const result = runTool(call.function.name, call.function.arguments);
+        const result = await runTool(call.function.name, call.function.arguments);
         stdout.write(
           `\n[${call.function.name}] ${call.function.arguments} -> ${result}\n`,
         );
