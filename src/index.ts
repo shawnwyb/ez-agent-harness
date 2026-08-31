@@ -1,6 +1,6 @@
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { chat, type Message } from "./llm.ts";
+import { chat, isAbortError, type Message } from "./llm.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 
 const MAX_STEPS = 8;
@@ -58,7 +58,21 @@ Read a file before you change it. Use edit for existing files, write_file only t
 
 const rl = createInterface({ input: stdin, output: stdout });
 
-console.log("ez-agent. Type a prompt, /clear to reset, /exit to quit\n");
+let turn: AbortController | null = null;
+
+rl.on("SIGINT", () => {
+  if (turn && !turn.signal.aborted) {
+    turn.abort();
+    return;
+  }
+  stdout.write("\n");
+  rl.close();
+  process.exit(0);
+});
+
+console.log(
+  "ez-agent. Type a prompt, /clear to reset, /exit to quit. Ctrl+C cancels a run; at the prompt it quits.\n",
+);
 
 while (true) {
   const input = (await rl.question("> ")).trim();
@@ -74,12 +88,22 @@ while (true) {
   messages.push({ role: "user", content: input });
   stdout.write("\n");
 
+  turn = new AbortController();
+  const signal = turn.signal;
+  let aborted = false;
+
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
+      if (signal.aborted) {
+        aborted = true;
+        break;
+      }
+
       const assistant = await chat({
         messages,
         tools: TOOLS,
         onDelta: (delta) => stdout.write(delta),
+        signal,
       });
       messages.push(assistant);
 
@@ -87,24 +111,40 @@ while (true) {
       if (!calls?.length) break;
 
       for (const call of calls) {
-        const result = await runTool(call.function.name, call.function.arguments);
+        const result = await runTool(
+          call.function.name,
+          call.function.arguments,
+          signal,
+        );
         printTrace(call.function.name, call.function.arguments, result);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
           content: result,
         });
+        if (signal.aborted) {
+          aborted = true;
+          break;
+        }
       }
+
+      if (aborted) break;
 
       if (step === MAX_STEPS - 1) {
         stdout.write(`\n(stopped after ${MAX_STEPS} steps)\n`);
       }
     }
-    stdout.write("\n\n");
+    stdout.write(aborted ? "\n(aborted)\n\n" : "\n\n");
   } catch (err) {
-    messages.length = checkpoint;
-    console.error(err instanceof Error ? err.message : err);
-    stdout.write("\n");
+    if (signal.aborted || isAbortError(err)) {
+      stdout.write("\n(aborted)\n\n");
+    } else {
+      messages.length = checkpoint;
+      console.error(err instanceof Error ? err.message : err);
+      stdout.write("\n");
+    }
+  } finally {
+    turn = null;
   }
 }
 

@@ -94,14 +94,20 @@ function readChoiceDelta(chunk: unknown): {
   };
 }
 
+export function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
 export async function chat({
   messages,
   tools,
   onDelta,
+  signal,
 }: {
   messages: Message[];
   tools: ToolDef[];
   onDelta: (text: string) => void;
+  signal?: AbortSignal;
 }): Promise<AssistantMessage> {
   const apiKey = process.env.XAI_API_KEY ?? process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -121,6 +127,7 @@ export async function chat({
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ model, messages, tools, stream: true }),
+    signal,
   });
 
   if (!res.ok) {
@@ -128,12 +135,13 @@ export async function chat({
     throw new Error(`LLM ${res.status}: ${body}`);
   }
 
-  return readSse(res, onDelta);
+  return readSse(res, onDelta, signal);
 }
 
 async function readSse(
   res: Response,
   onDelta: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<AssistantMessage> {
   if (!res.body) {
     throw new Error("LLM response had no body");
@@ -144,6 +152,11 @@ async function readSse(
   let buffer = "";
   let content = "";
   const toolCallAcc: ToolCallAcc[] = [];
+
+  const cancelRead = () => {
+    void reader.cancel();
+  };
+  signal?.addEventListener("abort", cancelRead);
 
   const consumeLine = (line: string) => {
     const data = line.startsWith("data:") ? line.slice(5).trim() : "";
@@ -166,18 +179,25 @@ async function readSse(
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        throw new DOMException("aborted", "AbortError");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) consumeLine(line);
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) consumeLine(line);
+    }
+
+    buffer += decoder.decode();
+    if (buffer) consumeLine(buffer);
+
+    return assembleAssistant(content, toolCallAcc);
+  } finally {
+    signal?.removeEventListener("abort", cancelRead);
   }
-
-  buffer += decoder.decode();
-  if (buffer) consumeLine(buffer);
-
-  return assembleAssistant(content, toolCallAcc);
 }

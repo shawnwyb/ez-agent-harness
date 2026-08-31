@@ -1,10 +1,7 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { ToolDef } from "./llm.ts";
-
-const execFileAsync = promisify(execFile);
 
 export const WORKSPACE = path.resolve(process.env.WORKSPACE ?? process.cwd());
 const MAX_CHARS = 24_000;
@@ -168,38 +165,109 @@ async function read_file(rel: string): Promise<string> {
   }
 }
 
-function formatExecError(err: unknown): string {
-  if (!isRecord(err)) return `error: ${String(err)}`;
-  const header =
-    err.killed === true
-      ? `error: timed out after ${BASH_TIMEOUT_MS}ms`
-      : `error: exit ${String(err.code ?? "unknown")}`;
-  return truncate(
-    [header, textField(err.stdout), textField(err.stderr)].filter(Boolean).join("\n"),
-  );
+function killProcessTree(pid: number): void {
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      return;
+    }
+  }
 }
 
-async function bash(command: string): Promise<string> {
-  try {
-    const { stdout, stderr } = await execFileAsync("/bin/bash", ["-lc", command], {
+async function bash(command: string, signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) return "error: aborted";
+
+  return new Promise((resolve) => {
+    const child = spawn("/bin/bash", ["-lc", command], {
       cwd: WORKSPACE,
-      timeout: BASH_TIMEOUT_MS,
-      maxBuffer: MAX_CHARS * 2,
       env: {
         ...process.env,
         GIT_PAGER: "cat",
         GIT_TERMINAL_PROMPT: "0",
         PAGER: "cat",
       },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
-    const out = [textField(stdout), textField(stderr)].filter(Boolean).join("\n");
-    return truncate(out || "(no output)");
-  } catch (err) {
-    return formatExecError(err);
-  }
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(truncate(text));
+    };
+
+    const onAbort = () => {
+      if (child.pid) killProcessTree(child.pid);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) killProcessTree(child.pid);
+    }, BASH_TIMEOUT_MS);
+
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += textField(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += textField(chunk);
+    });
+
+    child.on("error", (err) => {
+      finish(`error: ${err.message}`);
+    });
+
+    child.on("close", (code) => {
+      const out = [stdout, stderr].filter(Boolean).join("\n");
+      if (signal?.aborted) {
+        finish("error: aborted");
+        return;
+      }
+      if (timedOut) {
+        finish(
+          truncate(
+            [`error: timed out after ${BASH_TIMEOUT_MS}ms`, out]
+              .filter(Boolean)
+              .join("\n"),
+          ),
+        );
+        return;
+      }
+      if (code !== 0 && code !== null) {
+        finish(
+          truncate([`error: exit ${code}`, out].filter(Boolean).join("\n")),
+        );
+        return;
+      }
+      finish(out || "(no output)");
+    });
+  });
 }
 
-export async function runTool(name: string, argsJson: string): Promise<string> {
+export async function runTool(
+  name: string,
+  argsJson: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) return "error: aborted";
   const args = parseArgs(argsJson);
   if (typeof args === "string") return args;
 
@@ -214,7 +282,7 @@ export async function runTool(name: string, argsJson: string): Promise<string> {
     if (typeof args.command !== "string" || args.command.length === 0) {
       return "error: command must be a non-empty string";
     }
-    return bash(args.command);
+    return bash(args.command, signal);
   }
 
   if (name === "write_file") {
