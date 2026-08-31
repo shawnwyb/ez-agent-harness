@@ -4,6 +4,48 @@ import { chat, type Message } from "./llm.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 
 const MAX_STEPS = 8;
+const TRACE_ARG_CHARS = 80;
+const TRACE_RESULT_LINES = 8;
+
+function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, max)}…`;
+}
+
+function clipResult(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (lines.length <= TRACE_RESULT_LINES) return text;
+  const hidden = lines.length - TRACE_RESULT_LINES;
+  return `${lines.slice(0, TRACE_RESULT_LINES).join("\n")}\n… ${hidden} more lines`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatArgs(argsJson: string): string {
+  try {
+    const parsed: unknown = JSON.parse(argsJson || "{}");
+    if (!isRecord(parsed)) return clip(argsJson, 120);
+    return Object.entries(parsed)
+      .map(([key, value]) => {
+        const shown = typeof value === "string" ? value : JSON.stringify(value);
+        return `${key}=${clip(shown, TRACE_ARG_CHARS)}`;
+      })
+      .join(" ");
+  } catch {
+    return clip(argsJson, 120);
+  }
+}
+
+function printTrace(name: string, argsJson: string, result: string): void {
+  const body = clipResult(result)
+    .split("\n")
+    .map((line, i) => (i === 0 ? `  -> ${line}` : `     ${line}`))
+    .join("\n");
+  stdout.write(`\n  ${name}  ${formatArgs(argsJson)}\n${body}\n`);
+}
 
 const messages: Message[] = [
   {
@@ -46,9 +88,7 @@ while (true) {
 
       for (const call of calls) {
         const result = await runTool(call.function.name, call.function.arguments);
-        stdout.write(
-          `\n[${call.function.name}] ${call.function.arguments} -> ${result}\n`,
-        );
+        printTrace(call.function.name, call.function.arguments, result);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
