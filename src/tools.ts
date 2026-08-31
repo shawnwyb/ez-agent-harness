@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ToolDef } from "./llm.ts";
@@ -32,6 +32,21 @@ export const TOOLS: ToolDef[] = [
         type: "object",
         properties: { command: { type: "string" } },
         required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: `Create or overwrite a UTF-8 file. Path is relative to ${WORKSPACE}. Writes to disk immediately.`,
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" },
+        },
+        required: ["path", "content"],
       },
     },
   },
@@ -69,6 +84,22 @@ function resolveInWorkspace(rel: string): string {
     return `error: path escapes workspace: ${rel}`;
   }
   return resolved;
+}
+
+async function write_file(rel: string, content: string): Promise<string> {
+  const resolved = resolveInWorkspace(rel);
+  if (resolved.startsWith("error:")) return resolved;
+  try {
+    const info = await stat(resolved).catch(() => null);
+    if (info?.isDirectory()) {
+      return `error: ${rel} is a directory`;
+    }
+    await mkdir(path.dirname(resolved), { recursive: true });
+    await writeFile(resolved, content, "utf8");
+    return `wrote ${Buffer.byteLength(content, "utf8")} bytes to ${rel}`;
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function read_file(rel: string): Promise<string> {
@@ -132,6 +163,16 @@ export async function runTool(name: string, argsJson: string): Promise<string> {
       return "error: command must be a non-empty string";
     }
     return bash(args.command);
+  }
+
+  if (name === "write_file") {
+    if (typeof args.path !== "string" || args.path.length === 0) {
+      return "error: path must be a non-empty string";
+    }
+    if (typeof args.content !== "string") {
+      return "error: content must be a string";
+    }
+    return write_file(args.path, args.content);
   }
 
   return `error: unknown tool ${name}`;
