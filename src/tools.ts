@@ -39,7 +39,7 @@ export const TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "write_file",
-      description: `Create or overwrite a UTF-8 file. Path is relative to ${WORKSPACE}. Writes to disk immediately.`,
+      description: `Create or overwrite a UTF-8 file relative to ${WORKSPACE}. Read it first if it exists. Writes to disk immediately.`,
       parameters: {
         type: "object",
         properties: {

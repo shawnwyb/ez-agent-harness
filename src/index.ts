@@ -8,7 +8,9 @@ const MAX_STEPS = 8;
 const messages: Message[] = [
   {
     role: "system",
-    content: `You are a helpful coding agent. Be concise. Workspace: ${WORKSPACE}`,
+    content: `You are ez-agent, a coding agent. Workspace: ${WORKSPACE}
+    Tools: read_file, bash, write_file.
+    Read a file before you change it. After you change code, verify with bash (this repo: npx tsc --noEmit). Be concise. Match existing style.`,
   },
 ];
 
