@@ -39,7 +39,7 @@ export const TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "write_file",
-      description: `Create or overwrite a UTF-8 file relative to ${WORKSPACE}. Read it first if it exists. Writes to disk immediately.`,
+      description: `Create or overwrite a UTF-8 file relative to ${WORKSPACE}. Prefer edit for existing files. Writes to disk immediately.`,
       parameters: {
         type: "object",
         properties: {
@@ -47,6 +47,22 @@ export const TOOLS: ToolDef[] = [
           content: { type: "string" },
         },
         required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit",
+      description: `Replace one unique substring in an existing file relative to ${WORKSPACE}. old_string must match exactly once. Prefer this over write_file for existing files.`,
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          old_string: { type: "string" },
+          new_string: { type: "string" },
+        },
+        required: ["path", "old_string", "new_string"],
       },
     },
   },
@@ -84,6 +100,42 @@ function resolveInWorkspace(rel: string): string {
     return `error: path escapes workspace: ${rel}`;
   }
   return resolved;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle.length === 0) return 0;
+  let n = 0;
+  let from = 0;
+  while (true) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return n;
+    n += 1;
+    from = at + needle.length;
+  }
+}
+
+async function edit(
+  rel: string,
+  old_string: string,
+  new_string: string,
+): Promise<string> {
+  if (old_string.length === 0) return "error: old_string must not be empty";
+  const resolved = resolveInWorkspace(rel);
+  if (resolved.startsWith("error:")) return resolved;
+  try {
+    const info = await stat(resolved);
+    if (info.isDirectory()) return `error: ${rel} is a directory`;
+    const current = await readFile(resolved, "utf8");
+    const hits = countOccurrences(current, old_string);
+    if (hits === 0) return `error: old_string not found in ${rel}`;
+    if (hits > 1) {
+      return `error: old_string found ${hits} times in ${rel}; make it unique`;
+    }
+    await writeFile(resolved, current.replace(old_string, new_string), "utf8");
+    return `replaced 1 block in ${rel}`;
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function write_file(rel: string, content: string): Promise<string> {
@@ -173,6 +225,19 @@ export async function runTool(name: string, argsJson: string): Promise<string> {
       return "error: content must be a string";
     }
     return write_file(args.path, args.content);
+  }
+
+  if (name === "edit") {
+    if (typeof args.path !== "string" || args.path.length === 0) {
+      return "error: path must be a non-empty string";
+    }
+    if (typeof args.old_string !== "string") {
+      return "error: old_string must be a string";
+    }
+    if (typeof args.new_string !== "string") {
+      return "error: new_string must be a string";
+    }
+    return edit(args.path, args.old_string, args.new_string);
   }
 
   return `error: unknown tool ${name}`;
