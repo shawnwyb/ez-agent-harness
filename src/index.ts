@@ -3,6 +3,13 @@ import path from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { chat, isAbortError, type Message } from "./llm.ts";
+import {
+  createSession,
+  findSession,
+  listSessions,
+  loadSession,
+  saveSession,
+} from "./session.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 
 const AGENTS_MD_MAX = 8_000;
@@ -73,7 +80,18 @@ const system = [
   .filter((line) => line.length > 0)
   .join("\n");
 
-const messages: Message[] = [{ role: "system", content: system }];
+let messages: Message[] = [{ role: "system", content: system }];
+let session = await createSession(WORKSPACE, messages);
+
+async function persist(): Promise<void> {
+  await saveSession(session.file, session.meta, messages);
+}
+
+async function startNewSession(): Promise<void> {
+  messages = [{ role: "system", content: system }];
+  session = await createSession(WORKSPACE, messages);
+  console.log(`(new session ${session.meta.id})\n`);
+}
 
 const rl = createInterface({ input: stdin, output: stdout });
 
@@ -90,22 +108,50 @@ rl.on("SIGINT", () => {
 });
 
 console.log(
-  "ez-agent. Type a prompt, /clear to reset, /exit to quit. Ctrl+C cancels a run; at the prompt it quits.",
+  "ez-agent. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. Ctrl+C cancels a run; at the prompt it quits.",
 );
-console.log(agentsMd ? "(loaded AGENTS.md)\n" : "(no AGENTS.md)\n");
+console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
+console.log(`(session ${session.meta.id})\n`);
 
 while (true) {
   const input = (await rl.question("> ")).trim();
   if (!input) continue;
   if (input === "/exit" || input === "/quit") break;
-  if (input === "/clear") {
-    messages.length = 1;
-    console.log("(context cleared)\n");
+  if (input === "/clear" || input === "/new") {
+    await startNewSession();
+    continue;
+  }
+  if (input === "/sessions") {
+    const refs = await listSessions(WORKSPACE);
+    if (refs.length === 0) {
+      console.log("(no sessions)\n");
+      continue;
+    }
+    for (const ref of refs) {
+      const mark = ref.file === session.file ? " (current)" : "";
+      console.log(`${ref.id}${mark}`);
+    }
+    stdout.write("\n");
+    continue;
+  }
+  if (input === "/resume" || input.startsWith("/resume ")) {
+    const prefix = input === "/resume" ? undefined : input.slice("/resume ".length).trim();
+    const refs = await listSessions(WORKSPACE);
+    const found = findSession(refs, session.file, prefix || undefined);
+    if (!found) {
+      console.log("(no other session to resume)\n");
+      continue;
+    }
+    const loaded = await loadSession(found.file);
+    session = { meta: loaded.meta, file: found.file };
+    messages = loaded.messages;
+    console.log(`(resumed ${session.meta.id}, ${messages.length} messages)\n`);
     continue;
   }
 
   const checkpoint = messages.length;
   messages.push({ role: "user", content: input });
+  await persist();
   stdout.write("\n");
 
   turn = new AbortController();
@@ -155,11 +201,14 @@ while (true) {
       }
     }
     stdout.write(aborted ? "\n(aborted)\n\n" : "\n\n");
+    await persist();
   } catch (err) {
     if (signal.aborted || isAbortError(err)) {
       stdout.write("\n(aborted)\n\n");
+      await persist();
     } else {
       messages.length = checkpoint;
+      await persist();
       console.error(err instanceof Error ? err.message : err);
       stdout.write("\n");
     }
