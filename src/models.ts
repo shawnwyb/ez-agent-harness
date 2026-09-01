@@ -1,3 +1,6 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 export type ProviderId = "xai" | "anthropic";
 
 export type ModelRef = {
@@ -42,6 +45,14 @@ export const PROVIDERS: Record<ProviderId, Provider> = {
 
 const PROVIDER_IDS: ProviderId[] = ["xai", "anthropic"];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function settingsFile(workspace: string): string {
+  return path.join(workspace, ".ez-agent", "settings.json");
+}
+
 export function formatModel(model: ModelRef): string {
   return `${model.provider}/${model.id}`;
 }
@@ -82,7 +93,32 @@ function available(): ModelRef[] {
   return catalog().filter((model) => hasKey(model.provider));
 }
 
-export function initialModel(): ModelRef {
+export async function loadSavedModel(workspace: string): Promise<ModelRef | null> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(settingsFile(workspace), "utf8"));
+    if (!isRecord(raw) || typeof raw.defaultModel !== "string") return null;
+    const slash = parseSlash(raw.defaultModel);
+    if (!slash || !hasKey(slash.provider)) return null;
+    return slash;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveDefaultModel(
+  workspace: string,
+  model: ModelRef,
+): Promise<void> {
+  const file = settingsFile(workspace);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(
+    file,
+    `${JSON.stringify({ defaultModel: formatModel(model) }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+export function initialModel(saved: ModelRef | null): ModelRef {
   const raw = process.env.MODEL?.trim();
   if (raw) {
     const resolved = resolveModel(raw);
@@ -90,6 +126,7 @@ export function initialModel(): ModelRef {
     const slash = parseSlash(raw);
     if (slash) return slash;
   }
+  if (saved && hasKey(saved.provider)) return saved;
   if (hasKey("xai")) {
     return { provider: "xai", id: PROVIDERS.xai.defaultModel };
   }
@@ -131,27 +168,34 @@ export function resolveModel(query: string): ResolveResult {
 
   const pool = available();
   const exact = pool.filter((model) => model.id.toLowerCase() === lower);
-  if (exact.length === 1) return { kind: "ok", model: exact[0] };
+  if (exact.length === 1 && exact[0]) return { kind: "ok", model: exact[0] };
   if (exact.length > 1) return { kind: "many", models: exact };
 
   const sub = pool.filter((model) => {
     const label = formatModel(model).toLowerCase();
     return label.includes(lower) || model.id.toLowerCase().includes(lower);
   });
-  if (sub.length === 1) return { kind: "ok", model: sub[0] };
+  if (sub.length === 1 && sub[0]) return { kind: "ok", model: sub[0] };
   if (sub.length > 1) return { kind: "many", models: sub };
   return { kind: "none" };
 }
 
-export function printModels(current: ModelRef): void {
-  console.log(`current: ${formatModel(current)}\n`);
+export function printModels(current: ModelRef, saved: ModelRef | null): void {
+  console.log(`current: ${formatModel(current)}`);
+  console.log(
+    saved
+      ? `default: ${formatModel(saved)}\n`
+      : "default: (none; /model default saves one)\n",
+  );
   for (const id of PROVIDER_IDS) {
     const provider = PROVIDERS[id];
     const keyed = hasKey(id);
     console.log(keyed ? id : `${id}  (no ${provider.envKey})`);
     for (const modelId of provider.models) {
-      const mark =
-        current.provider === id && current.id === modelId ? " (current)" : "";
+      const tags: string[] = [];
+      if (current.provider === id && current.id === modelId) tags.push("current");
+      if (saved?.provider === id && saved.id === modelId) tags.push("default");
+      const mark = tags.length > 0 ? ` (${tags.join(", ")})` : "";
       console.log(`  ${modelId}${mark}`);
     }
     console.log("");

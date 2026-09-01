@@ -6,9 +6,11 @@ import { chat, isAbortError, type Message } from "./llm.ts";
 import {
   formatModel,
   initialModel,
+  loadSavedModel,
   modelFromMeta,
   printModels,
   resolveModel,
+  saveDefaultModel,
   transportFor,
   type ModelRef,
 } from "./models.ts";
@@ -80,17 +82,30 @@ function printTrace(name: string, argsJson: string, result: string): void {
 
 const agentsMd = await loadAgentsMd(WORKSPACE);
 
-const system = [
-  `You are ez-agent, a coding agent. Workspace: ${WORKSPACE}`,
-  "Tools: read_file, bash, write_file, edit.",
-  "Read a file before you change it. Use edit for existing files, write_file only to create. After you change code, verify with bash (this repo: npx tsc --noEmit). Be concise. Match existing style.",
-  agentsMd ? `\n# AGENTS.md\n${agentsMd}` : "",
-]
-  .filter((line) => line.length > 0)
-  .join("\n");
+function buildSystem(model: ModelRef): string {
+  return [
+    `You are ez-agent, a coding agent. Workspace: ${WORKSPACE}`,
+    `Model: ${formatModel(model)}.`,
+    "Tools: read_file, bash, write_file, edit.",
+    "Read a file before you change it. Use edit for existing files, write_file only to create. After you change code, verify with bash (this repo: npx tsc --noEmit). Be concise. Match existing style.",
+    agentsMd ? `\n# AGENTS.md\n${agentsMd}` : "",
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
 
-let current: ModelRef = initialModel();
-let messages: Message[] = [{ role: "system", content: system }];
+function applySystem(): void {
+  const content = buildSystem(current);
+  if (messages[0]?.role === "system") {
+    messages[0] = { role: "system", content };
+  } else {
+    messages.unshift({ role: "system", content });
+  }
+}
+
+let savedDefault: ModelRef | null = await loadSavedModel(WORKSPACE);
+let current: ModelRef = initialModel(savedDefault);
+let messages: Message[] = [{ role: "system", content: buildSystem(current) }];
 let session = await createSession(WORKSPACE, messages, current);
 
 async function persist(): Promise<void> {
@@ -101,10 +116,12 @@ function setModel(model: ModelRef): void {
   current = model;
   session.meta.provider = model.provider;
   session.meta.model = model.id;
+  applySystem();
 }
 
 async function startNewSession(): Promise<void> {
-  messages = [{ role: "system", content: system }];
+  if (savedDefault) current = savedDefault;
+  messages = [{ role: "system", content: buildSystem(current) }];
   session = await createSession(WORKSPACE, messages, current);
   console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
 }
@@ -124,13 +141,13 @@ rl.on("SIGINT", () => {
 });
 
 console.log(
-  "ez-agent. /model [id] switches models. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. Ctrl+C cancels a run; at the prompt it quits.",
+  "ez-agent. /model [id] switches this session. /model default [id] saves the startup default. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. Ctrl+C cancels a run; at the prompt it quits.",
 );
 console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
 console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
 
 while (true) {
-  const input = (await rl.question("> ")).trim();
+  const input = (await rl.question(`${formatModel(current)}> `)).trim();
   if (!input) continue;
   if (input === "/exit" || input === "/quit") break;
   if (input === "/clear" || input === "/new") {
@@ -140,7 +157,31 @@ while (true) {
   if (input === "/model" || input.startsWith("/model ")) {
     const query = input === "/model" ? "" : input.slice("/model ".length).trim();
     if (!query) {
-      printModels(current);
+      printModels(current, savedDefault);
+      continue;
+    }
+    if (query === "default" || query.startsWith("default ")) {
+      const rest = query === "default" ? "" : query.slice("default ".length).trim();
+      if (rest) {
+        const resolved = resolveModel(rest);
+        if (resolved.kind === "ok") {
+          setModel(resolved.model);
+          await persist();
+        } else if (resolved.kind === "many") {
+          console.log("(ambiguous; pick one)");
+          for (const model of resolved.models) {
+            console.log(`  ${formatModel(model)}`);
+          }
+          stdout.write("\n");
+          continue;
+        } else {
+          console.log(`(no match: ${rest})\n`);
+          continue;
+        }
+      }
+      savedDefault = current;
+      await saveDefaultModel(WORKSPACE, current);
+      console.log(`(default ${formatModel(current)})\n`);
       continue;
     }
     const resolved = resolveModel(query);
@@ -187,6 +228,8 @@ while (true) {
     messages = loaded.messages;
     const restored = modelFromMeta(loaded.meta.provider, loaded.meta.model);
     if (restored) current = restored;
+    applySystem();
+    await persist();
     console.log(
       `(resumed ${session.meta.id}, ${messages.length} messages · ${formatModel(current)})\n`,
     );
