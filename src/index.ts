@@ -141,12 +141,23 @@ function setModel(model: ModelRef): void {
   refreshContext();
 }
 
+function printIntro(): void {
+  console.log("ez-agent. /help lists commands.");
+  console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
+  console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
+}
+
 async function startNewSession(): Promise<void> {
   if (savedDefault) current = savedDefault;
   log = [messageEntry({ role: "system", content: buildSystem(current) })];
   session = await createSession(WORKSPACE, log, current);
   refreshContext();
   console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
+}
+
+function clearChat(): void {
+  console.clear();
+  printIntro();
 }
 
 const rl = createInterface({
@@ -214,7 +225,8 @@ function printHelp(): void {
   /help
   /model [id]              this session
   /model default [id]      save startup default
-  /new, /clear             new session (keeps default model)
+  /new                     new session (keeps default model)
+  /clear                   clear the screen; context stays
   /sessions
   /resume [id]
   /compact [focus]         summarize old turns; file keeps them
@@ -225,9 +237,7 @@ function printHelp(): void {
 `);
 }
 
-console.log("ez-agent. /help lists commands.");
-console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
-console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
+printIntro();
 
 while (true) {
   const input = await readInput();
@@ -237,8 +247,12 @@ while (true) {
     printHelp();
     continue;
   }
-  if (input === "/clear" || input === "/new") {
+  if (input === "/new") {
     await startNewSession();
+    continue;
+  }
+  if (input === "/clear") {
+    clearChat();
     continue;
   }
   if (input === "/model" || input.startsWith("/model ")) {
