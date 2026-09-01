@@ -1,7 +1,11 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { chat, isAbortError, type Message } from "./llm.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
+
+const AGENTS_MD_MAX = 8_000;
 
 const MAX_STEPS = 8;
 const TRACE_ARG_CHARS = 80;
@@ -39,6 +43,17 @@ function formatArgs(argsJson: string): string {
   }
 }
 
+async function loadAgentsMd(workspace: string): Promise<string | null> {
+  try {
+    const raw = (await readFile(path.join(workspace, "AGENTS.md"), "utf8")).trim();
+    if (raw.length === 0) return null;
+    if (raw.length <= AGENTS_MD_MAX) return raw;
+    return `${raw.slice(0, AGENTS_MD_MAX)}\n... truncated ${raw.length - AGENTS_MD_MAX} chars`;
+  } catch {
+    return null;
+  }
+}
+
 function printTrace(name: string, argsJson: string, result: string): void {
   const body = clipResult(result)
     .split("\n")
@@ -47,14 +62,18 @@ function printTrace(name: string, argsJson: string, result: string): void {
   stdout.write(`\n  ${name}  ${formatArgs(argsJson)}\n${body}\n`);
 }
 
-const messages: Message[] = [
-  {
-    role: "system",
-    content: `You are ez-agent, a coding agent. Workspace: ${WORKSPACE}
-Tools: read_file, bash, write_file, edit.
-Read a file before you change it. Use edit for existing files, write_file only to create. After you change code, verify with bash (this repo: npx tsc --noEmit). Be concise. Match existing style.`,
-  },
-];
+const agentsMd = await loadAgentsMd(WORKSPACE);
+
+const system = [
+  `You are ez-agent, a coding agent. Workspace: ${WORKSPACE}`,
+  "Tools: read_file, bash, write_file, edit.",
+  "Read a file before you change it. Use edit for existing files, write_file only to create. After you change code, verify with bash (this repo: npx tsc --noEmit). Be concise. Match existing style.",
+  agentsMd ? `\n# AGENTS.md\n${agentsMd}` : "",
+]
+  .filter((line) => line.length > 0)
+  .join("\n");
+
+const messages: Message[] = [{ role: "system", content: system }];
 
 const rl = createInterface({ input: stdin, output: stdout });
 
@@ -71,8 +90,9 @@ rl.on("SIGINT", () => {
 });
 
 console.log(
-  "ez-agent. Type a prompt, /clear to reset, /exit to quit. Ctrl+C cancels a run; at the prompt it quits.\n",
+  "ez-agent. Type a prompt, /clear to reset, /exit to quit. Ctrl+C cancels a run; at the prompt it quits.",
 );
+console.log(agentsMd ? "(loaded AGENTS.md)\n" : "(no AGENTS.md)\n");
 
 while (true) {
   const input = (await rl.question("> ")).trim();
