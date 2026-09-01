@@ -6,6 +6,8 @@ export type SessionMeta = {
   id: string;
   created: string;
   workspace: string;
+  provider?: string;
+  model?: string;
 };
 
 export type SessionRef = {
@@ -93,11 +95,14 @@ export async function saveSession(
 export async function createSession(
   workspace: string,
   messages: Message[],
+  model: { provider: string; id: string },
 ): Promise<{ meta: SessionMeta; file: string }> {
   const meta: SessionMeta = {
     id: newId(),
     created: new Date().toISOString(),
     workspace,
+    provider: model.provider,
+    model: model.id,
   };
   const file = path.join(sessionDir(workspace), `${meta.id}.jsonl`);
   await saveSession(file, meta, messages);
@@ -127,7 +132,13 @@ export async function loadSession(
         typeof raw.created === "string" &&
         typeof raw.workspace === "string"
       ) {
-        meta = { id: raw.id, created: raw.created, workspace: raw.workspace };
+        meta = {
+          id: raw.id,
+          created: raw.created,
+          workspace: raw.workspace,
+        };
+        if (typeof raw.provider === "string") meta.provider = raw.provider;
+        if (typeof raw.model === "string") meta.model = raw.model;
       }
       continue;
     }

@@ -103,23 +103,18 @@ export async function chat({
   tools,
   onDelta,
   signal,
+  apiKey,
+  baseUrl,
+  model,
 }: {
   messages: Message[];
   tools: ToolDef[];
   onDelta: (text: string) => void;
   signal?: AbortSignal;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
 }): Promise<AssistantMessage> {
-  const apiKey = process.env.XAI_API_KEY ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Set XAI_API_KEY or OPENAI_API_KEY in .env");
-  }
-
-  const baseUrl = (process.env.OPENAI_BASE_URL ?? "https://api.x.ai/v1").replace(
-    /\/$/,
-    "",
-  );
-  const model = process.env.MODEL ?? "grok-4.6";
-
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {

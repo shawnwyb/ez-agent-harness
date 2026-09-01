@@ -4,6 +4,15 @@ import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { chat, isAbortError, type Message } from "./llm.ts";
 import {
+  formatModel,
+  initialModel,
+  modelFromMeta,
+  printModels,
+  resolveModel,
+  transportFor,
+  type ModelRef,
+} from "./models.ts";
+import {
   createSession,
   findSession,
   listSessions,
@@ -80,17 +89,24 @@ const system = [
   .filter((line) => line.length > 0)
   .join("\n");
 
+let current: ModelRef = initialModel();
 let messages: Message[] = [{ role: "system", content: system }];
-let session = await createSession(WORKSPACE, messages);
+let session = await createSession(WORKSPACE, messages, current);
 
 async function persist(): Promise<void> {
   await saveSession(session.file, session.meta, messages);
 }
 
+function setModel(model: ModelRef): void {
+  current = model;
+  session.meta.provider = model.provider;
+  session.meta.model = model.id;
+}
+
 async function startNewSession(): Promise<void> {
   messages = [{ role: "system", content: system }];
-  session = await createSession(WORKSPACE, messages);
-  console.log(`(new session ${session.meta.id})\n`);
+  session = await createSession(WORKSPACE, messages, current);
+  console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
 }
 
 const rl = createInterface({ input: stdin, output: stdout });
@@ -108,10 +124,10 @@ rl.on("SIGINT", () => {
 });
 
 console.log(
-  "ez-agent. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. Ctrl+C cancels a run; at the prompt it quits.",
+  "ez-agent. /model [id] switches models. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. Ctrl+C cancels a run; at the prompt it quits.",
 );
 console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
-console.log(`(session ${session.meta.id})\n`);
+console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
 
 while (true) {
   const input = (await rl.question("> ")).trim();
@@ -119,6 +135,30 @@ while (true) {
   if (input === "/exit" || input === "/quit") break;
   if (input === "/clear" || input === "/new") {
     await startNewSession();
+    continue;
+  }
+  if (input === "/model" || input.startsWith("/model ")) {
+    const query = input === "/model" ? "" : input.slice("/model ".length).trim();
+    if (!query) {
+      printModels(current);
+      continue;
+    }
+    const resolved = resolveModel(query);
+    if (resolved.kind === "ok") {
+      setModel(resolved.model);
+      await persist();
+      console.log(`(model ${formatModel(current)})\n`);
+      continue;
+    }
+    if (resolved.kind === "many") {
+      console.log("(ambiguous; pick one)");
+      for (const model of resolved.models) {
+        console.log(`  ${formatModel(model)}`);
+      }
+      stdout.write("\n");
+      continue;
+    }
+    console.log(`(no match: ${query})\n`);
     continue;
   }
   if (input === "/sessions") {
@@ -145,7 +185,11 @@ while (true) {
     const loaded = await loadSession(found.file);
     session = { meta: loaded.meta, file: found.file };
     messages = loaded.messages;
-    console.log(`(resumed ${session.meta.id}, ${messages.length} messages)\n`);
+    const restored = modelFromMeta(loaded.meta.provider, loaded.meta.model);
+    if (restored) current = restored;
+    console.log(
+      `(resumed ${session.meta.id}, ${messages.length} messages · ${formatModel(current)})\n`,
+    );
     continue;
   }
 
@@ -170,6 +214,7 @@ while (true) {
         tools: TOOLS,
         onDelta: (delta) => stdout.write(delta),
         signal,
+        ...transportFor(current),
       });
       messages.push(assistant);
 
