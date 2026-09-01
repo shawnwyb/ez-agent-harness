@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import "./env.js";
+import "./env.ts";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { chat, estimateTokens, isAbortError } from "./llm.js";
+import { chat, estimateTokens, isAbortError } from "./llm.ts";
 import {
   contextWindow,
   formatContext,
@@ -15,7 +15,7 @@ import {
   saveDefaultModel,
   transportFor,
   type ModelRef,
-} from "./models.js";
+} from "./models.ts";
 import {
   buildContext,
   createSession,
@@ -30,11 +30,11 @@ import {
   messagesFromLog,
   saveSession,
   type LogEntry,
-} from "./session.js";
-import { expandAtFiles } from "./attach.js";
-import { confirmUnlink, isYes, unlinkGlobal } from "./install.js";
-import { runTool, TOOLS, WORKSPACE } from "./tools.js";
-import { HELP, startScreen } from "./tui.js";
+} from "./session.ts";
+import { expandAtFiles } from "./attach.ts";
+import { confirmUnlink, isYes, unlinkGlobal } from "./install.ts";
+import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
+import { HELP, startScreen } from "./tui.ts";
 
 if (process.argv[2] === "uninstall") {
   const yes = await confirmUnlink();

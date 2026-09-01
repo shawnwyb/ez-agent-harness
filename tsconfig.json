@@ -6,8 +6,14 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "verbatimModuleSyntax": true,
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["dist"]
 }
+

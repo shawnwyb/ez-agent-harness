@@ -7,7 +7,7 @@
     "ezagent": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "build": "tsc --noEmit false && chmod +x dist/index.js",
     "prestart": "npm run build",
     "start": "node dist/index.js",
     "link": "npm run build && node dist/link.js"

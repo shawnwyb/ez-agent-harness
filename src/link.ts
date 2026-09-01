@@ -1,4 +1,4 @@
-import { linkGlobal } from "./install.js";
+import { linkGlobal } from "./install.ts";
 
 const result = linkGlobal();
 console.error(result.message);
