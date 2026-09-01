@@ -11,7 +11,7 @@ import {
   type SelectListTheme,
   type SlashCommand,
 } from "@earendil-works/pi-tui";
-import { WORKSPACE } from "./tools.ts";
+import { WORKSPACE } from "./tools.js";
 
 const TRACE_ARG_CHARS = 80;
 const TRACE_RESULT_LINES = 8;

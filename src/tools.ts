@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ToolDef } from "./llm.ts";
+import type { ToolDef } from "./llm.js";
 
 export const WORKSPACE = path.resolve(process.env.WORKSPACE ?? process.cwd());
 const MAX_CHARS = 24_000;

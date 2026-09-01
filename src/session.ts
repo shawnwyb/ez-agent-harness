@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Message } from "./llm.ts";
+import type { Message } from "./llm.js";
 
 export type SessionMeta = {
   id: string;

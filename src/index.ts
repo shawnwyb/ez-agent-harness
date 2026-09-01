@@ -1,6 +1,8 @@
+#!/usr/bin/env node
+import "./env.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { chat, estimateTokens, isAbortError } from "./llm.ts";
+import { chat, estimateTokens, isAbortError } from "./llm.js";
 import {
   contextWindow,
   formatContext,
@@ -13,7 +15,7 @@ import {
   saveDefaultModel,
   transportFor,
   type ModelRef,
-} from "./models.ts";
+} from "./models.js";
 import {
   buildContext,
   createSession,
@@ -28,10 +30,10 @@ import {
   messagesFromLog,
   saveSession,
   type LogEntry,
-} from "./session.ts";
-import { expandAtFiles } from "./attach.ts";
-import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
-import { HELP, startScreen } from "./tui.ts";
+} from "./session.js";
+import { expandAtFiles } from "./attach.js";
+import { runTool, TOOLS, WORKSPACE } from "./tools.js";
+import { HELP, startScreen } from "./tui.js";
 
 const AGENTS_MD_MAX = 8_000;
 

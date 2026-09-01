@@ -1,5 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
-import { read_file, resolveInWorkspace } from "./tools.ts";
+import { read_file, resolveInWorkspace } from "./tools.js";
 
 const SKIP_DIR = new Set(["node_modules", ".git", ".ez-agent"]);
 
