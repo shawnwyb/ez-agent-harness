@@ -89,6 +89,45 @@ function catalog(): ModelRef[] {
   return models;
 }
 
+/** Catalog windows. Unknown ids fall back per provider. */
+const CONTEXT_WINDOWS: Record<string, number> = {
+  "grok-4.6": 500_000,
+  "grok-4.5": 500_000,
+  "grok-4-fast": 2_000_000,
+  "grok-3": 131_072,
+  "grok-3-mini": 131_072,
+  "claude-sonnet-5": 1_000_000,
+  "claude-opus-5": 1_000_000,
+  "claude-fable-5": 1_000_000,
+  "claude-haiku-4-5": 200_000,
+};
+
+const PROVIDER_WINDOW: Record<ProviderId, number> = {
+  xai: 500_000,
+  anthropic: 1_000_000,
+};
+
+export function contextWindow(model: ModelRef): number {
+  return CONTEXT_WINDOWS[model.id] ?? PROVIDER_WINDOW[model.provider];
+}
+
+function formatK(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return Number.isInteger(m) ? `${m}M` : `${m.toFixed(1)}M`;
+  }
+  if (n >= 1000) {
+    const k = n / 1000;
+    return k >= 10 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
+  }
+  return String(Math.max(0, Math.round(n)));
+}
+
+export function formatContext(used: number, window: number): string {
+  const pct = window > 0 ? Math.min(100, Math.round((used / window) * 100)) : 0;
+  return `${formatK(used)}/${formatK(window)} ${pct}%`;
+}
+
 function available(): ModelRef[] {
   return catalog().filter((model) => hasKey(model.provider));
 }

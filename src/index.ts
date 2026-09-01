@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { chat, isAbortError, type Message } from "./llm.ts";
+import { chat, estimateTokens, isAbortError, type Message } from "./llm.ts";
 import {
+  contextWindow,
+  formatContext,
   formatModel,
   initialModel,
   loadSavedModel,
@@ -110,6 +112,15 @@ let savedDefault: ModelRef | null = await loadSavedModel(WORKSPACE);
 let current: ModelRef = initialModel(savedDefault);
 let messages: Message[] = [{ role: "system", content: buildSystem(current) }];
 let session = await createSession(WORKSPACE, messages, current);
+let contextUsed = estimateTokens(messages, TOOLS);
+
+function refreshContext(apiPrompt?: number): void {
+  contextUsed = apiPrompt ?? estimateTokens(messages, TOOLS);
+}
+
+function promptLabel(): string {
+  return `${formatModel(current)} ${formatContext(contextUsed, contextWindow(current))}`;
+}
 
 async function persist(): Promise<void> {
   await saveSession(session.file, session.meta, messages);
@@ -120,12 +131,14 @@ function setModel(model: ModelRef): void {
   session.meta.provider = model.provider;
   session.meta.model = model.id;
   applySystem();
+  refreshContext();
 }
 
 async function startNewSession(): Promise<void> {
   if (savedDefault) current = savedDefault;
   messages = [{ role: "system", content: buildSystem(current) }];
   session = await createSession(WORKSPACE, messages, current);
+  refreshContext();
   console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
 }
 
@@ -154,6 +167,7 @@ function printHelp(): void {
   /delete current | <id> | all
   /exit, /quit
   Ctrl+C                   cancel a run; at the prompt, quit
+  prompt line              model and context fill (estimate, or API usage after a turn)
 `);
 }
 
@@ -162,7 +176,7 @@ console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
 console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
 
 while (true) {
-  const input = (await rl.question(`${formatModel(current)}> `)).trim();
+  const input = (await rl.question(`${promptLabel()}> `)).trim();
   if (!input) continue;
   if (input === "/exit" || input === "/quit") break;
   if (input === "/help" || input === "/?") {
@@ -308,6 +322,7 @@ while (true) {
     const restored = modelFromMeta(loaded.meta.provider, loaded.meta.model);
     if (restored) current = restored;
     applySystem();
+    refreshContext();
     await persist();
     console.log(
       `(resumed ${session.meta.id}, ${messages.length} messages · ${formatModel(current)})\n`,
@@ -331,16 +346,17 @@ while (true) {
         break;
       }
 
-      const assistant = await chat({
+      const result = await chat({
         messages,
         tools: TOOLS,
         onDelta: (delta) => stdout.write(delta),
         signal,
         ...transportFor(current),
       });
-      messages.push(assistant);
+      messages.push(result.message);
+      refreshContext(result.usage?.promptTokens);
 
-      const calls = assistant.tool_calls;
+      const calls = result.message.tool_calls;
       if (!calls?.length) break;
 
       for (const call of calls) {
@@ -355,6 +371,7 @@ while (true) {
           tool_call_id: call.id,
           content: result,
         });
+        refreshContext();
         if (signal.aborted) {
           aborted = true;
           break;
@@ -367,17 +384,22 @@ while (true) {
         stdout.write(`\n(stopped after ${MAX_STEPS} steps)\n`);
       }
     }
-    stdout.write(aborted ? "\n(aborted)\n\n" : "\n\n");
+    refreshContext();
+    const gauge = formatContext(contextUsed, contextWindow(current));
+    stdout.write(aborted ? `\n(aborted · ${gauge})\n\n` : `\n(${gauge})\n\n`);
     await persist();
   } catch (err) {
     if (signal.aborted || isAbortError(err)) {
-      stdout.write("\n(aborted)\n\n");
+      refreshContext();
+      const gauge = formatContext(contextUsed, contextWindow(current));
+      stdout.write(`\n(aborted · ${gauge})\n\n`);
       await persist();
     } else {
       messages.length = checkpoint;
-      await persist();
+      refreshContext();
       console.error(err instanceof Error ? err.message : err);
       stdout.write("\n");
+      await persist();
     }
   } finally {
     turn = null;

@@ -98,6 +98,31 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
+export type ChatUsage = {
+  promptTokens: number;
+  completionTokens: number;
+};
+
+export type ChatResult = {
+  message: AssistantMessage;
+  usage: ChatUsage | null;
+};
+
+function readUsage(chunk: unknown): ChatUsage | null {
+  if (!isRecord(chunk) || !isRecord(chunk.usage)) return null;
+  const prompt = chunk.usage.prompt_tokens;
+  if (typeof prompt !== "number") return null;
+  const completion = chunk.usage.completion_tokens;
+  return {
+    promptTokens: prompt,
+    completionTokens: typeof completion === "number" ? completion : 0,
+  };
+}
+
+export function estimateTokens(messages: Message[], tools: ToolDef[]): number {
+  return Math.ceil(JSON.stringify({ messages, tools }).length / 4);
+}
+
 export async function chat({
   messages,
   tools,
@@ -114,14 +139,20 @@ export async function chat({
   apiKey: string;
   baseUrl: string;
   model: string;
-}): Promise<AssistantMessage> {
+}): Promise<ChatResult> {
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ model, messages, tools, stream: true }),
+    body: JSON.stringify({
+      model,
+      messages,
+      tools,
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
     signal,
   });
 
@@ -137,7 +168,7 @@ async function readSse(
   res: Response,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
-): Promise<AssistantMessage> {
+): Promise<ChatResult> {
   if (!res.body) {
     throw new Error("LLM response had no body");
   }
@@ -147,6 +178,7 @@ async function readSse(
   let buffer = "";
   let content = "";
   const toolCallAcc: ToolCallAcc[] = [];
+  let usage: ChatUsage | null = null;
 
   const cancelRead = () => {
     void reader.cancel();
@@ -163,6 +195,9 @@ async function readSse(
     } catch {
       return;
     }
+
+    const nextUsage = readUsage(chunk);
+    if (nextUsage) usage = nextUsage;
 
     const delta = readChoiceDelta(chunk);
     if (delta.content) {
@@ -191,7 +226,7 @@ async function readSse(
     buffer += decoder.decode();
     if (buffer) consumeLine(buffer);
 
-    return assembleAssistant(content, toolCallAcc);
+    return { message: assembleAssistant(content, toolCallAcc), usage };
   } finally {
     signal?.removeEventListener("abort", cancelRead);
   }
