@@ -155,6 +155,48 @@ const rl = createInterface({
   completer: completePath,
 });
 
+const QUEUE_MAX = 16;
+const inputQueue: string[] = [];
+let waitingForLine: ((line: string) => void) | null = null;
+
+rl.on("line", (line: string) => {
+  if (waitingForLine) {
+    const resolve = waitingForLine;
+    waitingForLine = null;
+    resolve(line);
+    return;
+  }
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  if (inputQueue.length >= QUEUE_MAX) {
+    stdout.write("(queue full)\n");
+    return;
+  }
+  inputQueue.push(trimmed);
+  stdout.write(`(queued · ${inputQueue.length})\n`);
+});
+
+function takeQueued(): string | undefined {
+  while (inputQueue.length > 0) {
+    const next = inputQueue.shift();
+    if (next !== undefined && next.length > 0) return next;
+  }
+  return undefined;
+}
+
+function readInput(): Promise<string> {
+  const queued = takeQueued();
+  if (queued !== undefined) {
+    stdout.write(`${promptLabel()}> ${queued}\n`);
+    return Promise.resolve(queued);
+  }
+  rl.setPrompt(`${promptLabel()}> `);
+  rl.prompt();
+  return new Promise<string>((resolve) => {
+    waitingForLine = resolve;
+  }).then((line) => line.trim());
+}
+
 let turn: AbortController | null = null;
 
 rl.on("SIGINT", () => {
@@ -180,7 +222,6 @@ function printHelp(): void {
   @path                    attach a workspace file; tab completes paths
   /exit, /quit
   Ctrl+C                   cancel a run; at the prompt, quit
-  prompt line              model and context fill (estimate, or API usage after a turn)
 `);
 }
 
@@ -189,7 +230,7 @@ console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
 console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
 
 while (true) {
-  const input = (await rl.question(`${promptLabel()}> `)).trim();
+  const input = await readInput();
   if (!input) continue;
   if (input === "/exit" || input === "/quit") break;
   if (input === "/help" || input === "/?") {
