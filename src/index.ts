@@ -325,8 +325,8 @@ while (!quitting) {
         log.push({ type: "compaction", summary, keepFrom });
         await persist();
         refreshContext();
-        const gauge = formatContext(contextUsed, contextWindow(current));
-        screen.note(`(compacted · ${gauge})`);
+        screen.setFooter(promptLabel());
+        screen.note("(compacted)");
       }
     } catch (err) {
       if (turn.signal.aborted || isAbortError(err)) {
@@ -400,16 +400,14 @@ while (!quitting) {
       }
     }
     refreshContext();
-    const gauge = formatContext(contextUsed, contextWindow(current));
-    screen.note(aborted ? `(aborted · ${gauge})` : `(${gauge})`);
     screen.setFooter(promptLabel());
+    if (aborted) screen.note("(aborted)");
     await persist();
   } catch (err) {
     if (signal.aborted || isAbortError(err)) {
       refreshContext();
-      const gauge = formatContext(contextUsed, contextWindow(current));
-      screen.note(`(aborted · ${gauge})`);
       screen.setFooter(promptLabel());
+      screen.note("(aborted)");
       await persist();
     } else {
       log.length = checkpoint;

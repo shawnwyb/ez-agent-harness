@@ -116,7 +116,7 @@ class Transcript implements Component {
     const out: string[] = [];
     for (const block of this.blocks) {
       if (block.kind === "user") {
-        out.push(...paint(`you  ${block.text}`, width, (s) => `\x1b[36m${s}\x1b[0m`));
+        out.push(...paint(`you > ${block.text}`, width, (s) => `\x1b[36m${s}\x1b[0m`));
       } else if (block.kind === "assistant") {
         out.push(...paint(block.text.length > 0 ? block.text : "…", width, identity));
       } else if (block.kind === "tool") {
