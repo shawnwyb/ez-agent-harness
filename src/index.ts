@@ -143,9 +143,21 @@ rl.on("SIGINT", () => {
   process.exit(0);
 });
 
-console.log(
-  "ez-agent. /model [id] switches this session. /model default [id] saves the startup default. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. /delete current, /delete <id>, or /delete all. Ctrl+C cancels a run; at the prompt it quits.",
-);
+function printHelp(): void {
+  console.log(`commands:
+  /help
+  /model [id]              this session
+  /model default [id]      save startup default
+  /new, /clear             new session (keeps default model)
+  /sessions
+  /resume [id]
+  /delete current | <id> | all
+  /exit, /quit
+  Ctrl+C                   cancel a run; at the prompt, quit
+`);
+}
+
+console.log("ez-agent. /help lists commands.");
 console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
 console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
 
@@ -153,6 +165,10 @@ while (true) {
   const input = (await rl.question(`${formatModel(current)}> `)).trim();
   if (!input) continue;
   if (input === "/exit" || input === "/quit") break;
+  if (input === "/help" || input === "/?") {
+    printHelp();
+    continue;
+  }
   if (input === "/clear" || input === "/new") {
     await startNewSession();
     continue;
