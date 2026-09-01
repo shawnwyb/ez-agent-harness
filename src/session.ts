@@ -20,6 +20,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export type LogEntry =
+  | { type: "message"; message: Message }
+  | { type: "compaction"; summary: string; keepFrom: number };
+
+export function messageEntry(message: Message): LogEntry {
+  return { type: "message", message };
+}
+
+export function messagesFromLog(log: LogEntry[]): Message[] {
+  const messages: Message[] = [];
+  for (const entry of log) {
+    if (entry.type === "message") messages.push(entry.message);
+  }
+  return messages;
+}
+
+const KEEP_TAIL_TOKENS = 8_000;
+
+function isUser(message: Message | undefined): boolean {
+  return message?.role === "user";
+}
+
+/** First message index to keep in context after compact. Null if the tail is under KEEP_TAIL_TOKENS. */
+export function findKeepFrom(messages: Message[]): number | null {
+  if (messages.length < 4) return null;
+  let i = messages.length;
+  let tail = 0;
+  while (i > 1) {
+    i -= 1;
+    const row = messages[i];
+    if (!row) break;
+    tail += Math.ceil(JSON.stringify(row).length / 4);
+    if (tail >= KEEP_TAIL_TOKENS) break;
+  }
+  if (tail < KEEP_TAIL_TOKENS) return null;
+  while (i > 1 && !isUser(messages[i])) i -= 1;
+  if (i > 1 && i < messages.length - 1) return i;
+  return null;
+}
+
+export function buildContext(log: LogEntry[]): Message[] {
+  const messages = messagesFromLog(log);
+  let compact: { summary: string; keepFrom: number } | null = null;
+  for (const entry of log) {
+    if (entry.type === "compaction") compact = entry;
+  }
+  const system = messages[0];
+  if (!compact || !system || system.role !== "system") return messages;
+  const keepFrom = Math.min(Math.max(compact.keepFrom, 1), messages.length);
+  if (keepFrom <= 1) return messages;
+  return [
+    system,
+    {
+      role: "user",
+      content: `<compacted history>\n${compact.summary}\n</compacted history>`,
+    },
+    ...messages.slice(keepFrom),
+  ];
+}
+
 export function sessionDir(workspace: string): string {
   return path.join(workspace, ".ez-agent", "sessions");
 }
@@ -82,19 +142,19 @@ function parseMessage(value: unknown): Message | null {
 export async function saveSession(
   file: string,
   meta: SessionMeta,
-  messages: Message[],
+  log: LogEntry[],
 ): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   const lines = [
     JSON.stringify({ type: "meta", ...meta }),
-    ...messages.map((message) => JSON.stringify({ type: "message", message })),
+    ...log.map((entry) => JSON.stringify(entry)),
   ];
   await writeFile(file, `${lines.join("\n")}\n`, "utf8");
 }
 
 export async function createSession(
   workspace: string,
-  messages: Message[],
+  log: LogEntry[],
   model: { provider: string; id: string },
 ): Promise<{ meta: SessionMeta; file: string }> {
   const meta: SessionMeta = {
@@ -105,16 +165,16 @@ export async function createSession(
     model: model.id,
   };
   const file = path.join(sessionDir(workspace), `${meta.id}.jsonl`);
-  await saveSession(file, meta, messages);
+  await saveSession(file, meta, log);
   return { meta, file };
 }
 
 export async function loadSession(
   file: string,
-): Promise<{ meta: SessionMeta; messages: Message[] }> {
+): Promise<{ meta: SessionMeta; log: LogEntry[] }> {
   const text = await readFile(file, "utf8");
   let meta: SessionMeta | null = null;
-  const messages: Message[] = [];
+  const log: LogEntry[] = [];
 
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
@@ -145,17 +205,29 @@ export async function loadSession(
 
     if (raw.type === "message") {
       const message = parseMessage(raw.message);
-      if (message) messages.push(message);
+      if (message) log.push({ type: "message", message });
+      continue;
+    }
+
+    if (raw.type === "compaction") {
+      if (typeof raw.summary === "string" && typeof raw.keepFrom === "number") {
+        log.push({
+          type: "compaction",
+          summary: raw.summary,
+          keepFrom: raw.keepFrom,
+        });
+      }
     }
   }
 
   if (!meta) {
     throw new Error(`session file has no meta: ${file}`);
   }
+  const messages = messagesFromLog(log);
   if (messages.length === 0 || messages[0].role !== "system") {
     throw new Error(`session file has no system message: ${file}`);
   }
-  return { meta, messages };
+  return { meta, log };
 }
 
 export async function listSessions(workspace: string): Promise<SessionRef[]> {

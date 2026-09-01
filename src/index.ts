@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { chat, estimateTokens, isAbortError, type Message } from "./llm.ts";
+import { chat, estimateTokens, isAbortError } from "./llm.ts";
 import {
   contextWindow,
   formatContext,
@@ -17,14 +17,19 @@ import {
   type ModelRef,
 } from "./models.ts";
 import {
+  buildContext,
   createSession,
   deleteAllSessions,
   deleteSession,
+  findKeepFrom,
   findSession,
   listSessions,
   loadSession,
   matchSessions,
+  messageEntry,
+  messagesFromLog,
   saveSession,
+  type LogEntry,
 } from "./session.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 
@@ -101,21 +106,22 @@ function buildSystem(model: ModelRef): string {
 
 function applySystem(): void {
   const content = buildSystem(current);
-  if (messages[0]?.role === "system") {
-    messages[0] = { role: "system", content };
+  const first = log[0];
+  if (first?.type === "message" && first.message.role === "system") {
+    first.message = { role: "system", content };
   } else {
-    messages.unshift({ role: "system", content });
+    log.unshift(messageEntry({ role: "system", content }));
   }
 }
 
 let savedDefault: ModelRef | null = await loadSavedModel(WORKSPACE);
 let current: ModelRef = initialModel(savedDefault);
-let messages: Message[] = [{ role: "system", content: buildSystem(current) }];
-let session = await createSession(WORKSPACE, messages, current);
-let contextUsed = estimateTokens(messages, TOOLS);
+let log: LogEntry[] = [messageEntry({ role: "system", content: buildSystem(current) })];
+let session = await createSession(WORKSPACE, log, current);
+let contextUsed = estimateTokens(buildContext(log), TOOLS);
 
 function refreshContext(apiPrompt?: number): void {
-  contextUsed = apiPrompt ?? estimateTokens(messages, TOOLS);
+  contextUsed = apiPrompt ?? estimateTokens(buildContext(log), TOOLS);
 }
 
 function promptLabel(): string {
@@ -123,7 +129,7 @@ function promptLabel(): string {
 }
 
 async function persist(): Promise<void> {
-  await saveSession(session.file, session.meta, messages);
+  await saveSession(session.file, session.meta, log);
 }
 
 function setModel(model: ModelRef): void {
@@ -136,8 +142,8 @@ function setModel(model: ModelRef): void {
 
 async function startNewSession(): Promise<void> {
   if (savedDefault) current = savedDefault;
-  messages = [{ role: "system", content: buildSystem(current) }];
-  session = await createSession(WORKSPACE, messages, current);
+  log = [messageEntry({ role: "system", content: buildSystem(current) })];
+  session = await createSession(WORKSPACE, log, current);
   refreshContext();
   console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
 }
@@ -164,6 +170,7 @@ function printHelp(): void {
   /new, /clear             new session (keeps default model)
   /sessions
   /resume [id]
+  /compact [focus]         summarize old turns; file keeps them
   /delete current | <id> | all
   /exit, /quit
   Ctrl+C                   cancel a run; at the prompt, quit
@@ -318,20 +325,69 @@ while (true) {
     }
     const loaded = await loadSession(found.file);
     session = { meta: loaded.meta, file: found.file };
-    messages = loaded.messages;
+    log = loaded.log;
     const restored = modelFromMeta(loaded.meta.provider, loaded.meta.model);
     if (restored) current = restored;
     applySystem();
     refreshContext();
     await persist();
     console.log(
-      `(resumed ${session.meta.id}, ${messages.length} messages · ${formatModel(current)})\n`,
+      `(resumed ${session.meta.id}, ${messagesFromLog(log).length} messages · ${formatModel(current)})\n`,
     );
     continue;
   }
+  if (input === "/compact" || input.startsWith("/compact ")) {
+    const focus = input === "/compact" ? "" : input.slice("/compact ".length).trim();
+    const all = messagesFromLog(log);
+    const keepFrom = findKeepFrom(all);
+    if (keepFrom === null) {
+      console.log("(nothing to compact)\n");
+      continue;
+    }
+    let blob = JSON.stringify(all.slice(1, keepFrom));
+    if (blob.length > 80_000) blob = `${blob.slice(0, 80_000)}\n… truncated`;
+    const extra = focus ? ` Focus on: ${focus}.` : "";
+    stdout.write("(compacting…)\n");
+    turn = new AbortController();
+    try {
+      const result = await chat({
+        messages: [
+          {
+            role: "system",
+            content: `Summarize this coding-agent transcript for later turns.${extra} Keep files touched, decisions, errors, and unfinished work. Dense. No tools.`,
+          },
+          { role: "user", content: blob },
+        ],
+        tools: [],
+        onDelta: (delta) => stdout.write(delta),
+        signal: turn.signal,
+        ...transportFor(current),
+      });
+      const summary = result.message.content?.trim() ?? "";
+      if (!summary) {
+        stdout.write("\n(compact failed: empty summary)\n\n");
+      } else {
+        log.push({ type: "compaction", summary, keepFrom });
+        await persist();
+        refreshContext();
+        const gauge = formatContext(contextUsed, contextWindow(current));
+        stdout.write(`\n(compacted · ${gauge})\n\n`);
+      }
+    } catch (err) {
+      if (turn.signal.aborted || isAbortError(err)) {
+        stdout.write("\n(aborted)\n\n");
+      } else {
+        console.error(err instanceof Error ? err.message : err);
+        stdout.write("\n");
+      }
+    } finally {
+      turn = null;
+    }
+    continue;
+  }
 
-  const checkpoint = messages.length;
-  messages.push({ role: "user", content: input });
+  const checkpoint = log.length;
+  log.push(messageEntry({ role: "user", content: input }));
   await persist();
   stdout.write("\n");
 
@@ -347,30 +403,32 @@ while (true) {
       }
 
       const result = await chat({
-        messages,
+        messages: buildContext(log),
         tools: TOOLS,
         onDelta: (delta) => stdout.write(delta),
         signal,
         ...transportFor(current),
       });
-      messages.push(result.message);
+      log.push(messageEntry(result.message));
       refreshContext(result.usage?.promptTokens);
 
       const calls = result.message.tool_calls;
       if (!calls?.length) break;
 
       for (const call of calls) {
-        const result = await runTool(
+        const toolResult = await runTool(
           call.function.name,
           call.function.arguments,
           signal,
         );
-        printTrace(call.function.name, call.function.arguments, result);
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: result,
-        });
+        printTrace(call.function.name, call.function.arguments, toolResult);
+        log.push(
+          messageEntry({
+            role: "tool",
+            tool_call_id: call.id,
+            content: toolResult,
+          }),
+        );
         refreshContext();
         if (signal.aborted) {
           aborted = true;
@@ -395,7 +453,7 @@ while (true) {
       stdout.write(`\n(aborted · ${gauge})\n\n`);
       await persist();
     } else {
-      messages.length = checkpoint;
+      log.length = checkpoint;
       refreshContext();
       console.error(err instanceof Error ? err.message : err);
       stdout.write("\n");

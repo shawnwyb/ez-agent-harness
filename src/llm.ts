@@ -149,9 +149,9 @@ export async function chat({
     body: JSON.stringify({
       model,
       messages,
-      tools,
       stream: true,
       stream_options: { include_usage: true },
+      ...(tools.length > 0 ? { tools } : {}),
     }),
     signal,
   });
