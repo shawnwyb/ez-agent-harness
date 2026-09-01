@@ -90,7 +90,7 @@ function textField(value: unknown): string {
   return "";
 }
 
-function resolveInWorkspace(rel: string): string {
+export function resolveInWorkspace(rel: string): string {
   const resolved = path.resolve(WORKSPACE, rel);
   const relative = path.relative(WORKSPACE, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -151,7 +151,7 @@ async function write_file(rel: string, content: string): Promise<string> {
   }
 }
 
-async function read_file(rel: string): Promise<string> {
+export async function read_file(rel: string): Promise<string> {
   const resolved = resolveInWorkspace(rel);
   if (resolved.startsWith("error:")) return resolved;
   try {

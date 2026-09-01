@@ -31,6 +31,7 @@ import {
   saveSession,
   type LogEntry,
 } from "./session.ts";
+import { completePath, expandAtFiles } from "./attach.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 
 const AGENTS_MD_MAX = 8_000;
@@ -148,7 +149,11 @@ async function startNewSession(): Promise<void> {
   console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
 }
 
-const rl = createInterface({ input: stdin, output: stdout });
+const rl = createInterface({
+  input: stdin,
+  output: stdout,
+  completer: completePath,
+});
 
 let turn: AbortController | null = null;
 
@@ -172,6 +177,7 @@ function printHelp(): void {
   /resume [id]
   /compact [focus]         summarize old turns; file keeps them
   /delete current | <id> | all
+  @path                    attach a workspace file; tab completes paths
   /exit, /quit
   Ctrl+C                   cancel a run; at the prompt, quit
   prompt line              model and context fill (estimate, or API usage after a turn)
@@ -387,7 +393,9 @@ while (true) {
   }
 
   const checkpoint = log.length;
-  log.push(messageEntry({ role: "user", content: input }));
+  const expanded = await expandAtFiles(input);
+  for (const notice of expanded.notices) stdout.write(`${notice}\n`);
+  log.push(messageEntry({ role: "user", content: expanded.content }));
   await persist();
   stdout.write("\n");
 
