@@ -32,8 +32,20 @@ import {
   type LogEntry,
 } from "./session.js";
 import { expandAtFiles } from "./attach.js";
+import { confirmUnlink, isYes, unlinkGlobal } from "./install.js";
 import { runTool, TOOLS, WORKSPACE } from "./tools.js";
 import { HELP, startScreen } from "./tui.js";
+
+if (process.argv[2] === "uninstall") {
+  const yes = await confirmUnlink();
+  if (!yes) {
+    console.error("aborted");
+    process.exit(1);
+  }
+  const result = await unlinkGlobal();
+  console.error(result.message);
+  process.exit(result.ok ? 0 : 1);
+}
 
 const AGENTS_MD_MAX = 8_000;
 
@@ -122,6 +134,7 @@ function clearChat(): void {
 
 let turn: AbortController | null = null;
 let quitting = false;
+let pendingUninstall = false;
 
 const screen = startScreen({
   onAbort: () => {
@@ -146,7 +159,27 @@ while (!quitting) {
   screen.setFooter(promptLabel());
   const input = await screen.waitLine();
   if (!input) continue;
+  if (pendingUninstall) {
+    pendingUninstall = false;
+    if (isYes(input)) {
+      const result = await unlinkGlobal();
+      screen.note(result.message);
+      if (result.ok) {
+        quitting = true;
+        break;
+      }
+      continue;
+    }
+    if (input === "/exit" || input === "/quit") break;
+    screen.note("(uninstall cancelled)");
+    continue;
+  }
   if (input === "/exit" || input === "/quit") break;
+  if (input === "/uninstall") {
+    pendingUninstall = true;
+    screen.note("Remove the global ezagent command? Type y to confirm, anything else to cancel.");
+    continue;
+  }
   if (input === "/help" || input === "/?") {
     screen.note(HELP);
     continue;

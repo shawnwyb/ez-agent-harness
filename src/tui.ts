@@ -26,6 +26,7 @@ export const HELP = `commands:
   /resume [id]
   /compact [focus]         summarize old turns; file keeps them
   /delete current | <id> | all
+  /uninstall               remove the global ezagent command
   @path                    attach a workspace file; tab completes paths
   /exit, /quit
   Ctrl+C                   cancel a run; at the prompt, quit
@@ -40,6 +41,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "resume", description: "resume a session", argumentHint: "[id]" },
   { name: "compact", description: "summarize old turns", argumentHint: "[focus]" },
   { name: "delete", description: "delete sessions", argumentHint: "current | <id> | all" },
+  { name: "uninstall", description: "remove the global ezagent command" },
   { name: "exit", description: "quit" },
   { name: "quit", description: "quit" },
 ];
