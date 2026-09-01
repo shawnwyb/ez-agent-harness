@@ -1,16 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { stdin, stdout } from "node:process";
-import { createInterface } from "node:readline/promises";
 import { chat, estimateTokens, isAbortError } from "./llm.ts";
 import {
   contextWindow,
   formatContext,
   formatModel,
+  formatModelsList,
   initialModel,
   loadSavedModel,
   modelFromMeta,
-  printModels,
   resolveModel,
   saveDefaultModel,
   transportFor,
@@ -31,46 +29,13 @@ import {
   saveSession,
   type LogEntry,
 } from "./session.ts";
-import { completePath, expandAtFiles } from "./attach.ts";
+import { expandAtFiles } from "./attach.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
+import { HELP, startScreen } from "./tui.ts";
 
 const AGENTS_MD_MAX = 8_000;
 
 const MAX_STEPS = 8;
-const TRACE_ARG_CHARS = 80;
-const TRACE_RESULT_LINES = 8;
-
-function clip(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  if (flat.length <= max) return flat;
-  return `${flat.slice(0, max)}…`;
-}
-
-function clipResult(text: string): string {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  if (lines.length <= TRACE_RESULT_LINES) return text;
-  const hidden = lines.length - TRACE_RESULT_LINES;
-  return `${lines.slice(0, TRACE_RESULT_LINES).join("\n")}\n… ${hidden} more lines`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function formatArgs(argsJson: string): string {
-  try {
-    const parsed: unknown = JSON.parse(argsJson || "{}");
-    if (!isRecord(parsed)) return clip(argsJson, 120);
-    return Object.entries(parsed)
-      .map(([key, value]) => {
-        const shown = typeof value === "string" ? value : JSON.stringify(value);
-        return `${key}=${clip(shown, TRACE_ARG_CHARS)}`;
-      })
-      .join(" ");
-  } catch {
-    return clip(argsJson, 120);
-  }
-}
 
 async function loadAgentsMd(workspace: string): Promise<string | null> {
   try {
@@ -81,14 +46,6 @@ async function loadAgentsMd(workspace: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-function printTrace(name: string, argsJson: string, result: string): void {
-  const body = clipResult(result)
-    .split("\n")
-    .map((line, i) => (i === 0 ? `  -> ${line}` : `     ${line}`))
-    .join("\n");
-  stdout.write(`\n  ${name}  ${formatArgs(argsJson)}\n${body}\n`);
 }
 
 const agentsMd = await loadAgentsMd(WORKSPACE);
@@ -142,9 +99,9 @@ function setModel(model: ModelRef): void {
 }
 
 function printIntro(): void {
-  console.log("ez-agent. /help lists commands.");
-  console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
-  console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
+  screen.note("ez-agent. /help lists commands.");
+  screen.note(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
+  screen.note(`(session ${session.meta.id} · ${formatModel(current)})`);
 }
 
 async function startNewSession(): Promise<void> {
@@ -152,99 +109,44 @@ async function startNewSession(): Promise<void> {
   log = [messageEntry({ role: "system", content: buildSystem(current) })];
   session = await createSession(WORKSPACE, log, current);
   refreshContext();
-  console.log(`(new session ${session.meta.id} · ${formatModel(current)})\n`);
+  screen.setFooter(promptLabel());
+  screen.note(`(new session ${session.meta.id} · ${formatModel(current)})`);
 }
 
 function clearChat(): void {
-  console.clear();
+  screen.clearView();
   printIntro();
 }
 
-const rl = createInterface({
-  input: stdin,
-  output: stdout,
-  completer: completePath,
-});
-
-const QUEUE_MAX = 16;
-const inputQueue: string[] = [];
-let waitingForLine: ((line: string) => void) | null = null;
-
-rl.on("line", (line: string) => {
-  if (waitingForLine) {
-    const resolve = waitingForLine;
-    waitingForLine = null;
-    resolve(line);
-    return;
-  }
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  if (inputQueue.length >= QUEUE_MAX) {
-    stdout.write("(queue full)\n");
-    return;
-  }
-  inputQueue.push(trimmed);
-  stdout.write(`(queued · ${inputQueue.length})\n`);
-});
-
-function takeQueued(): string | undefined {
-  while (inputQueue.length > 0) {
-    const next = inputQueue.shift();
-    if (next !== undefined && next.length > 0) return next;
-  }
-  return undefined;
-}
-
-function readInput(): Promise<string> {
-  const queued = takeQueued();
-  if (queued !== undefined) {
-    stdout.write(`${promptLabel()}> ${queued}\n`);
-    return Promise.resolve(queued);
-  }
-  rl.setPrompt(`${promptLabel()}> `);
-  rl.prompt();
-  return new Promise<string>((resolve) => {
-    waitingForLine = resolve;
-  }).then((line) => line.trim());
-}
-
 let turn: AbortController | null = null;
+let quitting = false;
 
-rl.on("SIGINT", () => {
-  if (turn && !turn.signal.aborted) {
-    turn.abort();
-    return;
-  }
-  stdout.write("\n");
-  rl.close();
-  process.exit(0);
+const screen = startScreen({
+  onAbort: () => {
+    if (turn && !turn.signal.aborted) {
+      turn.abort();
+      return true;
+    }
+    return false;
+  },
+  onQuit: () => {
+    quitting = true;
+    turn?.abort();
+    screen.stop();
+    process.exit(0);
+  },
 });
 
-function printHelp(): void {
-  console.log(`commands:
-  /help
-  /model [id]              this session
-  /model default [id]      save startup default
-  /new                     new session (keeps default model)
-  /clear                   clear the screen; context stays
-  /sessions
-  /resume [id]
-  /compact [focus]         summarize old turns; file keeps them
-  /delete current | <id> | all
-  @path                    attach a workspace file; tab completes paths
-  /exit, /quit
-  Ctrl+C                   cancel a run; at the prompt, quit
-`);
-}
-
+screen.setFooter(promptLabel());
 printIntro();
 
-while (true) {
-  const input = await readInput();
+while (!quitting) {
+  screen.setFooter(promptLabel());
+  const input = await screen.waitLine();
   if (!input) continue;
   if (input === "/exit" || input === "/quit") break;
   if (input === "/help" || input === "/?") {
-    printHelp();
+    screen.note(HELP);
     continue;
   }
   if (input === "/new") {
@@ -258,7 +160,7 @@ while (true) {
   if (input === "/model" || input.startsWith("/model ")) {
     const query = input === "/model" ? "" : input.slice("/model ".length).trim();
     if (!query) {
-      printModels(current, savedDefault);
+      screen.note(formatModelsList(current, savedDefault));
       continue;
     }
     if (query === "default" || query.startsWith("default ")) {
@@ -269,50 +171,50 @@ while (true) {
           setModel(resolved.model);
           await persist();
         } else if (resolved.kind === "many") {
-          console.log("(ambiguous; pick one)");
-          for (const model of resolved.models) {
-            console.log(`  ${formatModel(model)}`);
-          }
-          stdout.write("\n");
+          screen.note(
+            ["(ambiguous; pick one)", ...resolved.models.map((model) => `  ${formatModel(model)}`)].join(
+              "\n",
+            ),
+          );
           continue;
         } else {
-          console.log(`(no match: ${rest})\n`);
+          screen.note(`(no match: ${rest})`);
           continue;
         }
       }
       savedDefault = current;
       await saveDefaultModel(WORKSPACE, current);
-      console.log(`(default ${formatModel(current)})\n`);
+      screen.note(`(default ${formatModel(current)})`);
       continue;
     }
     const resolved = resolveModel(query);
     if (resolved.kind === "ok") {
       setModel(resolved.model);
       await persist();
-      console.log(`(model ${formatModel(current)})\n`);
+      screen.note(`(model ${formatModel(current)})`);
       continue;
     }
     if (resolved.kind === "many") {
-      console.log("(ambiguous; pick one)");
-      for (const model of resolved.models) {
-        console.log(`  ${formatModel(model)}`);
-      }
-      stdout.write("\n");
+      screen.note(
+        ["(ambiguous; pick one)", ...resolved.models.map((model) => `  ${formatModel(model)}`)].join(
+          "\n",
+        ),
+      );
       continue;
     }
-    console.log(`(no match: ${query})\n`);
+    screen.note(`(no match: ${query})`);
     continue;
   }
   if (input === "/delete" || input.startsWith("/delete ")) {
     const arg = input === "/delete" ? "" : input.slice("/delete ".length).trim();
     if (!arg) {
-      console.log("(/delete current  |  /delete <id prefix>  |  /delete all)\n");
+      screen.note("(/delete current  |  /delete <id prefix>  |  /delete all)");
       continue;
     }
     const refs = await listSessions(WORKSPACE);
     if (arg === "all") {
       const deleted = await deleteAllSessions(WORKSPACE);
-      console.log(`(deleted ${deleted} session${deleted === 1 ? "" : "s"})`);
+      screen.note(`(deleted ${deleted} session${deleted === 1 ? "" : "s"})`);
       await startNewSession();
       continue;
     }
@@ -321,59 +223,51 @@ while (true) {
       try {
         await deleteSession(session.file);
       } catch (err) {
-        console.error(err instanceof Error ? err.message : err);
-        stdout.write("\n");
+        screen.note(err instanceof Error ? err.message : String(err));
         continue;
       }
-      console.log(`(deleted ${id})`);
+      screen.note(`(deleted ${id})`);
       await startNewSession();
       continue;
     }
     const hits = matchSessions(refs, arg);
     if (hits.length === 0) {
-      console.log("(no session matches that id)\n");
+      screen.note("(no session matches that id)");
       continue;
     }
     if (hits.length > 1) {
-      console.log("(ambiguous; pick a longer prefix)");
-      for (const ref of hits) {
-        console.log(`  ${ref.id}`);
-      }
-      stdout.write("\n");
+      screen.note(
+        ["(ambiguous; pick a longer prefix)", ...hits.map((ref) => `  ${ref.id}`)].join("\n"),
+      );
       continue;
     }
     const target = hits[0];
     if (!target) {
-      console.log("(no session matches that id)\n");
+      screen.note("(no session matches that id)");
       continue;
     }
     const wasCurrent = target.file === session.file;
     try {
       await deleteSession(target.file);
     } catch (err) {
-      console.error(err instanceof Error ? err.message : err);
-      stdout.write("\n");
+      screen.note(err instanceof Error ? err.message : String(err));
       continue;
     }
-    console.log(`(deleted ${target.id})`);
-    if (wasCurrent) {
-      await startNewSession();
-    } else {
-      stdout.write("\n");
-    }
+    screen.note(`(deleted ${target.id})`);
+    if (wasCurrent) await startNewSession();
     continue;
   }
   if (input === "/sessions") {
     const refs = await listSessions(WORKSPACE);
     if (refs.length === 0) {
-      console.log("(no sessions)\n");
+      screen.note("(no sessions)");
       continue;
     }
-    for (const ref of refs) {
-      const mark = ref.file === session.file ? " (current)" : "";
-      console.log(`${ref.id}${mark}`);
-    }
-    stdout.write("\n");
+    screen.note(
+      refs
+        .map((ref) => `${ref.id}${ref.file === session.file ? " (current)" : ""}`)
+        .join("\n"),
+    );
     continue;
   }
   if (input === "/resume" || input.startsWith("/resume ")) {
@@ -381,7 +275,7 @@ while (true) {
     const refs = await listSessions(WORKSPACE);
     const found = findSession(refs, session.file, prefix || undefined);
     if (!found) {
-      console.log("(no other session to resume)\n");
+      screen.note("(no other session to resume)");
       continue;
     }
     const loaded = await loadSession(found.file);
@@ -392,8 +286,8 @@ while (true) {
     applySystem();
     refreshContext();
     await persist();
-    console.log(
-      `(resumed ${session.meta.id}, ${messagesFromLog(log).length} messages · ${formatModel(current)})\n`,
+    screen.note(
+      `(resumed ${session.meta.id}, ${messagesFromLog(log).length} messages · ${formatModel(current)})`,
     );
     continue;
   }
@@ -402,13 +296,13 @@ while (true) {
     const all = messagesFromLog(log);
     const keepFrom = findKeepFrom(all);
     if (keepFrom === null) {
-      console.log("(nothing to compact)\n");
+      screen.note("(nothing to compact)");
       continue;
     }
     let blob = JSON.stringify(all.slice(1, keepFrom));
     if (blob.length > 80_000) blob = `${blob.slice(0, 80_000)}\n… truncated`;
     const extra = focus ? ` Focus on: ${focus}.` : "";
-    stdout.write("(compacting…)\n");
+    screen.note("(compacting…)");
     turn = new AbortController();
     try {
       const result = await chat({
@@ -420,26 +314,25 @@ while (true) {
           { role: "user", content: blob },
         ],
         tools: [],
-        onDelta: (delta) => stdout.write(delta),
+        onDelta: (delta) => screen.assistantDelta(delta),
         signal: turn.signal,
         ...transportFor(current),
       });
       const summary = result.message.content?.trim() ?? "";
       if (!summary) {
-        stdout.write("\n(compact failed: empty summary)\n\n");
+        screen.note("(compact failed: empty summary)");
       } else {
         log.push({ type: "compaction", summary, keepFrom });
         await persist();
         refreshContext();
         const gauge = formatContext(contextUsed, contextWindow(current));
-        stdout.write(`\n(compacted · ${gauge})\n\n`);
+        screen.note(`(compacted · ${gauge})`);
       }
     } catch (err) {
       if (turn.signal.aborted || isAbortError(err)) {
-        stdout.write("\n(aborted)\n\n");
+        screen.note("(aborted)");
       } else {
-        console.error(err instanceof Error ? err.message : err);
-        stdout.write("\n");
+        screen.note(err instanceof Error ? err.message : String(err));
       }
     } finally {
       turn = null;
@@ -449,10 +342,10 @@ while (true) {
 
   const checkpoint = log.length;
   const expanded = await expandAtFiles(input);
-  for (const notice of expanded.notices) stdout.write(`${notice}\n`);
+  for (const notice of expanded.notices) screen.note(notice);
+  screen.user(input);
   log.push(messageEntry({ role: "user", content: expanded.content }));
   await persist();
-  stdout.write("\n");
 
   turn = new AbortController();
   const signal = turn.signal;
@@ -468,12 +361,13 @@ while (true) {
       const result = await chat({
         messages: buildContext(log),
         tools: TOOLS,
-        onDelta: (delta) => stdout.write(delta),
+        onDelta: (delta) => screen.assistantDelta(delta),
         signal,
         ...transportFor(current),
       });
       log.push(messageEntry(result.message));
       refreshContext(result.usage?.promptTokens);
+      screen.setFooter(promptLabel());
 
       const calls = result.message.tool_calls;
       if (!calls?.length) break;
@@ -484,7 +378,7 @@ while (true) {
           call.function.arguments,
           signal,
         );
-        printTrace(call.function.name, call.function.arguments, toolResult);
+        screen.tool(call.function.name, call.function.arguments, toolResult);
         log.push(
           messageEntry({
             role: "tool",
@@ -502,24 +396,26 @@ while (true) {
       if (aborted) break;
 
       if (step === MAX_STEPS - 1) {
-        stdout.write(`\n(stopped after ${MAX_STEPS} steps)\n`);
+        screen.note(`(stopped after ${MAX_STEPS} steps)`);
       }
     }
     refreshContext();
     const gauge = formatContext(contextUsed, contextWindow(current));
-    stdout.write(aborted ? `\n(aborted · ${gauge})\n\n` : `\n(${gauge})\n\n`);
+    screen.note(aborted ? `(aborted · ${gauge})` : `(${gauge})`);
+    screen.setFooter(promptLabel());
     await persist();
   } catch (err) {
     if (signal.aborted || isAbortError(err)) {
       refreshContext();
       const gauge = formatContext(contextUsed, contextWindow(current));
-      stdout.write(`\n(aborted · ${gauge})\n\n`);
+      screen.note(`(aborted · ${gauge})`);
+      screen.setFooter(promptLabel());
       await persist();
     } else {
       log.length = checkpoint;
       refreshContext();
-      console.error(err instanceof Error ? err.message : err);
-      stdout.write("\n");
+      screen.note(err instanceof Error ? err.message : String(err));
+      screen.setFooter(promptLabel());
       await persist();
     }
   } finally {
@@ -527,4 +423,5 @@ while (true) {
   }
 }
 
-rl.close();
+screen.stop();
+

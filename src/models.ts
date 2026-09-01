@@ -219,26 +219,32 @@ export function resolveModel(query: string): ResolveResult {
   return { kind: "none" };
 }
 
-export function printModels(current: ModelRef, saved: ModelRef | null): void {
-  console.log(`current: ${formatModel(current)}`);
-  console.log(
+export function formatModelsList(current: ModelRef, saved: ModelRef | null): string {
+  const lines = [
+    `current: ${formatModel(current)}`,
     saved
-      ? `default: ${formatModel(saved)}\n`
-      : "default: (none; /model default saves one)\n",
-  );
+      ? `default: ${formatModel(saved)}`
+      : "default: (none; /model default saves one)",
+    "",
+  ];
   for (const id of PROVIDER_IDS) {
     const provider = PROVIDERS[id];
     const keyed = hasKey(id);
-    console.log(keyed ? id : `${id}  (no ${provider.envKey})`);
+    lines.push(keyed ? id : `${id}  (no ${provider.envKey})`);
     for (const modelId of provider.models) {
       const tags: string[] = [];
       if (current.provider === id && current.id === modelId) tags.push("current");
       if (saved?.provider === id && saved.id === modelId) tags.push("default");
       const mark = tags.length > 0 ? ` (${tags.join(", ")})` : "";
-      console.log(`  ${modelId}${mark}`);
+      lines.push(`  ${modelId}${mark}`);
     }
-    console.log("");
+    lines.push("");
   }
+  return lines.join("\n");
+}
+
+export function printModels(current: ModelRef, saved: ModelRef | null): void {
+  console.log(formatModelsList(current, saved));
 }
 
 export function modelFromMeta(
