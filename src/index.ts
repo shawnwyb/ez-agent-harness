@@ -475,7 +475,6 @@ while (!quitting) {
             content: toolResult,
           }),
         );
-        refreshContext();
         if (signal.aborted) {
           aborted = true;
           break;
@@ -488,7 +487,6 @@ while (!quitting) {
         screen.note(`(stopped after ${MAX_STEPS} steps)`);
       }
     }
-    refreshContext();
     screen.setFooter(promptLabel());
     if (aborted) screen.note("(aborted)");
     await persist();
