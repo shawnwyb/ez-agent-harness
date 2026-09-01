@@ -16,9 +16,12 @@ import {
 } from "./models.ts";
 import {
   createSession,
+  deleteAllSessions,
+  deleteSession,
   findSession,
   listSessions,
   loadSession,
+  matchSessions,
   saveSession,
 } from "./session.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
@@ -141,7 +144,7 @@ rl.on("SIGINT", () => {
 });
 
 console.log(
-  "ez-agent. /model [id] switches this session. /model default [id] saves the startup default. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. Ctrl+C cancels a run; at the prompt it quits.",
+  "ez-agent. /model [id] switches this session. /model default [id] saves the startup default. /new or /clear starts a new session. /sessions lists. /resume [id] loads one. /delete current, /delete <id>, or /delete all. Ctrl+C cancels a run; at the prompt it quits.",
 );
 console.log(agentsMd ? "(loaded AGENTS.md)" : "(no AGENTS.md)");
 console.log(`(session ${session.meta.id} · ${formatModel(current)})\n`);
@@ -200,6 +203,66 @@ while (true) {
       continue;
     }
     console.log(`(no match: ${query})\n`);
+    continue;
+  }
+  if (input === "/delete" || input.startsWith("/delete ")) {
+    const arg = input === "/delete" ? "" : input.slice("/delete ".length).trim();
+    if (!arg) {
+      console.log("(/delete current  |  /delete <id prefix>  |  /delete all)\n");
+      continue;
+    }
+    const refs = await listSessions(WORKSPACE);
+    if (arg === "all") {
+      const deleted = await deleteAllSessions(WORKSPACE);
+      console.log(`(deleted ${deleted} session${deleted === 1 ? "" : "s"})`);
+      await startNewSession();
+      continue;
+    }
+    if (arg === "current" || arg === ".") {
+      const id = session.meta.id;
+      try {
+        await deleteSession(session.file);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : err);
+        stdout.write("\n");
+        continue;
+      }
+      console.log(`(deleted ${id})`);
+      await startNewSession();
+      continue;
+    }
+    const hits = matchSessions(refs, arg);
+    if (hits.length === 0) {
+      console.log("(no session matches that id)\n");
+      continue;
+    }
+    if (hits.length > 1) {
+      console.log("(ambiguous; pick a longer prefix)");
+      for (const ref of hits) {
+        console.log(`  ${ref.id}`);
+      }
+      stdout.write("\n");
+      continue;
+    }
+    const target = hits[0];
+    if (!target) {
+      console.log("(no session matches that id)\n");
+      continue;
+    }
+    const wasCurrent = target.file === session.file;
+    try {
+      await deleteSession(target.file);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : err);
+      stdout.write("\n");
+      continue;
+    }
+    console.log(`(deleted ${target.id})`);
+    if (wasCurrent) {
+      await startNewSession();
+    } else {
+      stdout.write("\n");
+    }
     continue;
   }
   if (input === "/sessions") {

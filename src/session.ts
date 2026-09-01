@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Message } from "./llm.ts";
 
@@ -209,4 +209,26 @@ export function findSession(
   const others = refs.filter((ref) => ref.file !== currentFile);
   if (!prefix) return others[0] ?? null;
   return others.find((ref) => ref.id.startsWith(prefix)) ?? null;
+}
+
+export function matchSessions(refs: SessionRef[], prefix: string): SessionRef[] {
+  return refs.filter((ref) => ref.id.startsWith(prefix));
+}
+
+export async function deleteSession(file: string): Promise<void> {
+  await unlink(file);
+}
+
+export async function deleteAllSessions(workspace: string): Promise<number> {
+  const refs = await listSessions(workspace);
+  let deleted = 0;
+  for (const ref of refs) {
+    try {
+      await unlink(ref.file);
+      deleted += 1;
+    } catch {
+      continue;
+    }
+  }
+  return deleted;
 }
