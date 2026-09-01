@@ -8,13 +8,16 @@ import {
   formatContext,
   formatModel,
   formatModelsList,
+  hasKey,
   initialModel,
+  isProviderId,
   loadSavedModel,
   modelFromMeta,
   resolveModel,
   saveDefaultModel,
   transportFor,
   type ModelRef,
+  type ProviderId,
 } from "./models.ts";
 import {
   buildContext,
@@ -32,6 +35,7 @@ import {
   type LogEntry,
 } from "./session.ts";
 import { expandAtFiles } from "./attach.ts";
+import { deleteAuthKey, writeAuthKey } from "./auth.ts";
 import { confirmUnlink, isYes, unlinkGlobal } from "./install.ts";
 import { runTool, TOOLS, WORKSPACE } from "./tools.ts";
 import { HELP, startScreen } from "./tui.ts";
@@ -135,6 +139,7 @@ function clearChat(): void {
 let turn: AbortController | null = null;
 let quitting = false;
 let pendingUninstall = false;
+let pendingLogin: ProviderId | null = null;
 
 const screen = startScreen({
   onAbort: () => {
@@ -174,7 +179,56 @@ while (!quitting) {
     screen.note("(uninstall cancelled)");
     continue;
   }
+  if (pendingLogin) {
+    const provider = pendingLogin;
+    pendingLogin = null;
+    if (input === "/exit" || input === "/quit") break;
+    if (input.startsWith("/")) {
+      screen.note("(login cancelled)");
+      continue;
+    }
+    writeAuthKey(provider, input.trim());
+    screen.note(`(saved ${provider} key)`);
+    continue;
+  }
   if (input === "/exit" || input === "/quit") break;
+  if (input === "/login" || input.startsWith("/login ")) {
+    const rest = input === "/login" ? "" : input.slice("/login ".length).trim();
+    if (!rest) {
+      screen.note(
+        [
+          "/login xai | anthropic",
+          `xai${hasKey("xai") ? "" : "  (no key)"}`,
+          `anthropic${hasKey("anthropic") ? "" : "  (no key)"}`,
+        ].join("\n"),
+      );
+      continue;
+    }
+    const space = rest.indexOf(" ");
+    const prov = (space === -1 ? rest : rest.slice(0, space)).trim();
+    const inline = space === -1 ? "" : rest.slice(space).trim();
+    if (!isProviderId(prov)) {
+      screen.note(`(unknown provider: ${prov})`);
+      continue;
+    }
+    if (inline) {
+      writeAuthKey(prov, inline);
+      screen.note(`(saved ${prov} key)`);
+      continue;
+    }
+    pendingLogin = prov;
+    screen.note(`Paste the ${prov} API key. It is not written to the session.`);
+    continue;
+  }
+  if (input === "/logout" || input.startsWith("/logout ")) {
+    const rest = input === "/logout" ? "" : input.slice("/logout ".length).trim();
+    if (!rest || !isProviderId(rest)) {
+      screen.note("/logout xai | anthropic");
+      continue;
+    }
+    screen.note(deleteAuthKey(rest) ? `(removed ${rest} key)` : `(no ${rest} key in auth.json)`);
+    continue;
+  }
   if (input === "/uninstall") {
     pendingUninstall = true;
     screen.note("Remove the global ezagent command? Type y to confirm, anything else to cancel.");

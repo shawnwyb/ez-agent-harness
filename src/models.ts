@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { authFile, readAuthKey } from "./auth.ts";
 
 export type ProviderId = "xai" | "anthropic";
 
@@ -62,8 +63,15 @@ export function isProviderId(value: string): value is ProviderId {
 }
 
 export function hasKey(provider: ProviderId): boolean {
-  const value = process.env[PROVIDERS[provider].envKey];
-  return typeof value === "string" && value.length > 0;
+  return apiKeyFor(provider) !== undefined;
+}
+
+function apiKeyFor(provider: ProviderId): string | undefined {
+  const fromAuth = readAuthKey(provider);
+  if (fromAuth) return fromAuth;
+  const fromEnv = process.env[PROVIDERS[provider].envKey];
+  if (typeof fromEnv === "string" && fromEnv.length > 0) return fromEnv;
+  return undefined;
 }
 
 export function transportFor(model: ModelRef): {
@@ -72,9 +80,9 @@ export function transportFor(model: ModelRef): {
   model: string;
 } {
   const provider = PROVIDERS[model.provider];
-  const apiKey = process.env[provider.envKey];
+  const apiKey = apiKeyFor(model.provider);
   if (!apiKey) {
-    throw new Error(`Set ${provider.envKey} in .env`);
+    throw new Error(`Set ${model.provider} key in ${authFile()} (or export ${provider.envKey})`);
   }
   return { apiKey, baseUrl: provider.baseUrl, model: model.id };
 }

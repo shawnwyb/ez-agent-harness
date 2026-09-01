@@ -7,6 +7,5 @@ function loadIfExists(file: string): void {
   process.loadEnvFile(file);
 }
 
-// Existing process.env wins. Cwd .env wins over ~/.ez-agent/.env.
-loadIfExists(path.join(process.cwd(), ".env"));
+// Existing process.env wins. Cwd and package .env are not read.
 loadIfExists(path.join(os.homedir(), ".ez-agent", ".env"));
