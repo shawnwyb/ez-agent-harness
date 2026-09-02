@@ -11,6 +11,7 @@ import {
   splitReplacement,
 } from "./hashline.ts";
 import type { ToolDef } from "./llm.ts";
+import { globSearch, grepSearch } from "./search.ts";
 
 export const WORKSPACE = path.resolve(process.env.WORKSPACE ?? process.cwd());
 const MAX_CHARS = 24_000;
@@ -33,7 +34,7 @@ export const TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "bash",
-      description: `Run a shell command in ${WORKSPACE}. Use for listing files, git, and tests.`,
+      description: `Run a shell command in ${WORKSPACE}. Use for git and tests. Prefer grep/glob to search.`,
       parameters: {
         type: "object",
         properties: { command: { type: "string" } },
@@ -72,6 +73,37 @@ export const TOOLS: ToolDef[] = [
           old_string: { type: "string" },
         },
         required: ["path", "new_string"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "grep",
+      description: `Search file contents in ${WORKSPACE} with a JavaScript regex. Returns path:line:text. Prefer this over bash grep.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: { type: "string" },
+          path: { type: "string" },
+          glob: { type: "string" },
+        },
+        required: ["pattern"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "glob",
+      description: `Find files in ${WORKSPACE} by glob (e.g. **/*.ts, src/**/*.json). Prefer this over bash find.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: { type: "string" },
+          path: { type: "string" },
+        },
+        required: ["pattern"],
       },
     },
   },
@@ -371,6 +403,23 @@ export async function runTool(
       return editReplace(args.path, args.old_string, args.new_string);
     }
     return "error: edit needs tag + start from read_file, or old_string";
+  }
+
+  if (name === "grep") {
+    if (typeof args.pattern !== "string" || args.pattern.length === 0) {
+      return "error: pattern must be a non-empty string";
+    }
+    const grepPath = typeof args.path === "string" ? args.path : undefined;
+    const grepGlob = typeof args.glob === "string" ? args.glob : undefined;
+    return grepSearch(WORKSPACE, args.pattern, { path: grepPath, glob: grepGlob, signal });
+  }
+
+  if (name === "glob") {
+    if (typeof args.pattern !== "string" || args.pattern.length === 0) {
+      return "error: pattern must be a non-empty string";
+    }
+    const globRoot = typeof args.path === "string" && args.path.length > 0 ? args.path : ".";
+    return globSearch(WORKSPACE, args.pattern, globRoot, signal);
   }
 
   return `error: unknown tool ${name}`;
