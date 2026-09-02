@@ -39,7 +39,7 @@ Remove the command:
 ezagent uninstall
 ```
 
-Uninstall command does not delete keys or sessions.
+Uninstall command does not delete keys or sessions. Those live in `~/.ez-agent` (Pi-style), not in the project directory.
 
 ## Acknowledgements
 

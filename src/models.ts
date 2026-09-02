@@ -1,6 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { authFile, readAuthKey } from "./auth.ts";
+import {
+  ensureAgentDir,
+  legacySettingsFile,
+  migrateLegacyProjectDir,
+  settingsFile,
+} from "./paths.ts";
 
 export type ProviderId = "xai" | "anthropic";
 
@@ -48,10 +54,6 @@ const PROVIDER_IDS: ProviderId[] = ["xai", "anthropic"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function settingsFile(workspace: string): string {
-  return path.join(workspace, ".ez-agent", "settings.json");
 }
 
 export function formatModel(model: ModelRef): string {
@@ -140,9 +142,9 @@ function available(): ModelRef[] {
   return catalog().filter((model) => hasKey(model.provider));
 }
 
-export async function loadSavedModel(workspace: string): Promise<ModelRef | null> {
+async function readDefaultModel(file: string): Promise<ModelRef | null> {
   try {
-    const raw: unknown = JSON.parse(await readFile(settingsFile(workspace), "utf8"));
+    const raw: unknown = JSON.parse(await readFile(file, "utf8"));
     if (!isRecord(raw) || typeof raw.defaultModel !== "string") return null;
     const slash = parseSlash(raw.defaultModel);
     if (!slash || !hasKey(slash.provider)) return null;
@@ -152,12 +154,20 @@ export async function loadSavedModel(workspace: string): Promise<ModelRef | null
   }
 }
 
+export async function loadSavedModel(workspace: string): Promise<ModelRef | null> {
+  await migrateLegacyProjectDir(workspace);
+  return (
+    (await readDefaultModel(settingsFile(workspace))) ??
+    (await readDefaultModel(legacySettingsFile(workspace)))
+  );
+}
+
 export async function saveDefaultModel(
   workspace: string,
   model: ModelRef,
 ): Promise<void> {
   const file = settingsFile(workspace);
-  await mkdir(path.dirname(file), { recursive: true });
+  await ensureAgentDir(path.dirname(file));
   await writeFile(
     file,
     `${JSON.stringify({ defaultModel: formatModel(model) }, null, 2)}\n`,

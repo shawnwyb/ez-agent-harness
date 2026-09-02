@@ -1,9 +1,9 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { agentHome } from "./paths.ts";
 
 export function authFile(): string {
-  return path.join(os.homedir(), ".ez-agent", "auth.json");
+  return path.join(agentHome(), "auth.json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

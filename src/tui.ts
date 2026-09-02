@@ -19,7 +19,7 @@ const TRACE_RESULT_LINES = 8;
 export const HELP = `commands:
   /help
   /model [id]              this session
-  /model default [id]      save startup default
+  /model default [id]      save startup default in ~/.ez-agent
   /new                     new session (keeps default model)
   /clear                   clear the screen; context stays
   /sessions

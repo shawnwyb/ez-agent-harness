@@ -1,6 +1,14 @@
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Message } from "./llm.ts";
+import {
+  ensureAgentDir,
+  legacySessionDir,
+  migrateLegacyProjectDir,
+  sessionDir,
+} from "./paths.ts";
+
+export { sessionDir } from "./paths.ts";
 
 export type SessionMeta = {
   id: string;
@@ -80,10 +88,6 @@ export function buildContext(log: LogEntry[]): Message[] {
   ];
 }
 
-export function sessionDir(workspace: string): string {
-  return path.join(workspace, ".ez-agent", "sessions");
-}
-
 function newId(): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const rand = Math.random().toString(36).slice(2, 8);
@@ -144,7 +148,7 @@ export async function saveSession(
   meta: SessionMeta,
   log: LogEntry[],
 ): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
+  await ensureAgentDir(path.dirname(file));
   const lines = [
     JSON.stringify({ type: "meta", ...meta }),
     ...log.map((entry) => JSON.stringify(entry)),
@@ -157,6 +161,7 @@ export async function createSession(
   log: LogEntry[],
   model: { provider: string; id: string },
 ): Promise<{ meta: SessionMeta; file: string }> {
+  await migrateLegacyProjectDir(workspace);
   const meta: SessionMeta = {
     id: newId(),
     created: new Date().toISOString(),
@@ -230,42 +235,45 @@ export async function loadSession(
   return { meta, log };
 }
 
+function sessionScanDirs(workspace: string): string[] {
+  const dirs = [sessionDir(workspace)];
+  const legacy = legacySessionDir(workspace);
+  if (path.resolve(legacy) !== path.resolve(dirs[0])) dirs.push(legacy);
+  return dirs;
+}
+
 export async function listSessions(workspace: string): Promise<SessionRef[]> {
-  const dir = sessionDir(workspace);
-  let names: string[];
-  try {
-    names = (await readdir(dir)).filter((name) => name.endsWith(".jsonl"));
-  } catch {
-    return [];
-  }
+  await migrateLegacyProjectDir(workspace);
 
   const refs: SessionRef[] = [];
-  for (const name of names) {
-    const file = path.join(dir, name);
+  const seen = new Set<string>();
+  for (const dir of sessionScanDirs(workspace)) {
+    let names: string[];
     try {
-      const info = await stat(file);
-      const first = (await readFile(file, "utf8")).split("\n")[0] ?? "";
-      const raw: unknown = JSON.parse(first);
-      if (
-        isRecord(raw) &&
-        raw.type === "meta" &&
-        typeof raw.id === "string" &&
-        typeof raw.created === "string"
-      ) {
-        refs.push({
-          id: raw.id,
-          file,
-          created: raw.created,
-        });
-        continue;
-      }
-      refs.push({
-        id: name.replace(/\.jsonl$/, ""),
-        file,
-        created: info.mtime.toISOString(),
-      });
+      names = (await readdir(dir)).filter((name) => name.endsWith(".jsonl"));
     } catch {
       continue;
+    }
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try {
+        const info = await stat(file);
+        const first = (await readFile(file, "utf8")).split("\n")[0] ?? "";
+        const raw: unknown = JSON.parse(first);
+        const id =
+          isRecord(raw) && raw.type === "meta" && typeof raw.id === "string"
+            ? raw.id
+            : name.replace(/\.jsonl$/, "");
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const created =
+          isRecord(raw) && raw.type === "meta" && typeof raw.created === "string"
+            ? raw.created
+            : info.mtime.toISOString();
+        refs.push({ id, file, created });
+      } catch {
+        continue;
+      }
     }
   }
 
