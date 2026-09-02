@@ -53,8 +53,6 @@ if (process.argv[2] === "uninstall") {
 
 const AGENTS_MD_MAX = 8_000;
 
-const MAX_STEPS = 8;
-
 async function loadAgentsMd(workspace: string): Promise<string | null> {
   try {
     const raw = (await readFile(path.join(workspace, "AGENTS.md"), "utf8")).trim();
@@ -441,7 +439,7 @@ while (!quitting) {
   let aborted = false;
 
   try {
-    for (let step = 0; step < MAX_STEPS; step++) {
+    while (true) {
       if (signal.aborted) {
         aborted = true;
         break;
@@ -482,10 +480,6 @@ while (!quitting) {
       }
 
       if (aborted) break;
-
-      if (step === MAX_STEPS - 1) {
-        screen.note(`(stopped after ${MAX_STEPS} steps)`);
-      }
     }
     screen.setFooter(promptLabel());
     if (aborted) screen.note("(aborted)");
