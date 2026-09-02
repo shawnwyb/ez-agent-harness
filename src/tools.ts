@@ -1,6 +1,15 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  applyFileTag,
+  formatRead,
+  parseLine,
+  parseTag,
+  previewRead,
+  splitFile,
+  splitReplacement,
+} from "./hashline.ts";
 import type { ToolDef } from "./llm.ts";
 
 export const WORKSPACE = path.resolve(process.env.WORKSPACE ?? process.cwd());
@@ -12,7 +21,7 @@ export const TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "read_file",
-      description: `Read a UTF-8 file. Path is relative to ${WORKSPACE}.`,
+      description: `Read a UTF-8 file. Path is relative to ${WORKSPACE}. Starts with [path#TAG], then LINE:text. Pass TAG and line numbers to edit.`,
       parameters: {
         type: "object",
         properties: { path: { type: "string" } },
@@ -51,15 +60,18 @@ export const TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "edit",
-      description: `Replace one unique substring in an existing file relative to ${WORKSPACE}. old_string must match exactly once. Prefer this over write_file for existing files.`,
+      description: `Replace an inclusive line range in an existing file relative to ${WORKSPACE}. Prefer tag + start/end from the last read_file ([path#TAG] and LINE:text). new_string is the replacement lines with no LINE: prefixes. old_string still works if it matches exactly once.`,
       parameters: {
         type: "object",
         properties: {
           path: { type: "string" },
-          old_string: { type: "string" },
+          tag: { type: "string" },
+          start: { type: "integer" },
+          end: { type: "integer" },
           new_string: { type: "string" },
+          old_string: { type: "string" },
         },
-        required: ["path", "old_string", "new_string"],
+        required: ["path", "new_string"],
       },
     },
   },
@@ -111,28 +123,71 @@ function countOccurrences(haystack: string, needle: string): number {
   }
 }
 
-async function edit(
+async function loadExisting(
+  rel: string,
+): Promise<{ ok: true; text: string; resolved: string } | { ok: false; error: string }> {
+  const resolved = resolveInWorkspace(rel);
+  if (resolved.startsWith("error:")) return { ok: false, error: resolved };
+  try {
+    const info = await stat(resolved);
+    if (info.isDirectory()) return { ok: false, error: `error: ${rel} is a directory` };
+    return { ok: true, text: await readFile(resolved, "utf8"), resolved };
+  } catch (err) {
+    return { ok: false, error: `error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function editReplace(
   rel: string,
   old_string: string,
   new_string: string,
 ): Promise<string> {
   if (old_string.length === 0) return "error: old_string must not be empty";
-  const resolved = resolveInWorkspace(rel);
-  if (resolved.startsWith("error:")) return resolved;
+  const loaded = await loadExisting(rel);
+  if (!loaded.ok) return loaded.error;
+  const hits = countOccurrences(loaded.text, old_string);
+  if (hits === 0) return `error: old_string not found in ${rel}`;
+  if (hits > 1) {
+    return `error: old_string found ${hits} times in ${rel}; make it unique`;
+  }
   try {
-    const info = await stat(resolved);
-    if (info.isDirectory()) return `error: ${rel} is a directory`;
-    const current = await readFile(resolved, "utf8");
-    const hits = countOccurrences(current, old_string);
-    if (hits === 0) return `error: old_string not found in ${rel}`;
-    if (hits > 1) {
-      return `error: old_string found ${hits} times in ${rel}; make it unique`;
-    }
-    await writeFile(resolved, current.replace(old_string, new_string), "utf8");
-    return `replaced 1 block in ${rel}`;
+    await writeFile(loaded.resolved, loaded.text.replace(old_string, new_string), "utf8");
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
+  return `replaced 1 block in ${rel}`;
+}
+
+async function editFileTag(
+  rel: string,
+  tagRaw: string,
+  startRaw: unknown,
+  endRaw: unknown,
+  new_string: string,
+): Promise<string> {
+  const tag = parseTag(tagRaw);
+  if (!tag) {
+    return `error: tag must be the 4-hex TAG from read_file (e.g. A1B2 or [path#A1B2])`;
+  }
+  const start = parseLine(startRaw, "start");
+  if (typeof start === "string") return start;
+  const end = endRaw === undefined || endRaw === null || endRaw === ""
+    ? start
+    : parseLine(endRaw, "end");
+  if (typeof end === "string") return end;
+  const loaded = await loadExisting(rel);
+  if (!loaded.ok) return loaded.error;
+  const applied = applyFileTag(rel, loaded.text, { tag, start, end, new_string });
+  if (typeof applied === "string") return applied;
+  try {
+    await writeFile(loaded.resolved, applied.next, "utf8");
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const removed = end - start + 1;
+  const added = splitReplacement(new_string).length;
+  const preview = previewRead(rel, applied.next, start, added);
+  return `replaced lines ${start}-${end} in ${rel} (${removed} → ${added})\n${preview}`;
 }
 
 async function write_file(rel: string, content: string): Promise<string> {
@@ -159,7 +214,14 @@ export async function read_file(rel: string): Promise<string> {
     if (info.isDirectory()) {
       return `error: ${rel} is a directory; use bash to list it`;
     }
-    return truncate(await readFile(resolved, "utf8"));
+    const raw = await readFile(resolved, "utf8");
+    const numbered = formatRead(rel, raw);
+    if (numbered.length <= MAX_CHARS) return numbered;
+    const cut = numbered.lastIndexOf("\n", MAX_CHARS);
+    const keep = cut > 0 ? numbered.slice(0, cut) : numbered.slice(0, MAX_CHARS);
+    const shown = Math.max(0, keep.split("\n").length - 1);
+    const total = splitFile(raw).lines.length;
+    return `${keep}\n... truncated ${total - shown} of ${total} lines`;
   } catch (err) {
     return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -299,13 +361,16 @@ export async function runTool(
     if (typeof args.path !== "string" || args.path.length === 0) {
       return "error: path must be a non-empty string";
     }
-    if (typeof args.old_string !== "string") {
-      return "error: old_string must be a string";
-    }
     if (typeof args.new_string !== "string") {
       return "error: new_string must be a string";
     }
-    return edit(args.path, args.old_string, args.new_string);
+    if (typeof args.tag === "string" && args.tag.length > 0) {
+      return editFileTag(args.path, args.tag, args.start, args.end, args.new_string);
+    }
+    if (typeof args.old_string === "string") {
+      return editReplace(args.path, args.old_string, args.new_string);
+    }
+    return "error: edit needs tag + start from read_file, or old_string";
   }
 
   return `error: unknown tool ${name}`;
