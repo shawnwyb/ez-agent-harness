@@ -4,6 +4,8 @@ A from-scratch, lightweight coding agent for the terminal. The loop, providers, 
 
 Needs Node 22+. Used on macOS. Install from this clone.
 
+<img width="908" height="671" alt="Screenshot 2026-09-02 at 3 02 02 PM" src="https://github.com/user-attachments/assets/4f16159a-7922-4a24-a2dc-b52ae94e946f" />
+
 ## Quick Start
 
 You need an [xAI](https://console.x.ai) or [Anthropic](https://console.anthropic.com) API key.
