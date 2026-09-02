@@ -73,7 +73,7 @@ function buildSystem(model: ModelRef): string {
     `You are ez-agent, a coding agent. Workspace: ${WORKSPACE}`,
     `Model: ${formatModel(model)}.`,
     "Tools: read_file, bash, write_file, edit, grep, glob.",
-    "Read a file before you change it. read_file starts with [path#TAG] then LINE:text. edit uses that TAG plus 1-based start/end; do not retype old text. old_string is a fallback. write_file only to create. Use grep for file contents and glob for paths; do not bash find/grep. After you change code, verify with bash (this repo: npx tsc --noEmit). Be concise. Match existing style.",
+    "Read a file before you change it. read_file starts with [path#TAG] then LINE:text. edit uses that TAG plus 1-based start/end; do not retype old text. old_string is a fallback. write_file only to create. Use grep for file contents and glob for paths; do not bash find/grep. edit/write_file append (tsc: ok) or (tsc: errors) when tsconfig.json exists; fix errors before you finish. Be concise. Match existing style.",
     agentsMd ? `\n# AGENTS.md\n${agentsMd}` : "",
   ]
     .filter((line) => line.length > 0)
